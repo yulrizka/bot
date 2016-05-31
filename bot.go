@@ -4,12 +4,24 @@ import "time"
 
 // Message represents chat message
 type Message struct {
-	ID   string
-	From User
-	Date time.Time
-	Chat Chat
-	Text string
+	ID             string
+	From           User
+	Date           time.Time
+	Chat           Chat
+	Text           string
+	Format         MessageFormat
+	ReplyMessageID string
 }
+
+// MessageFormat represents formatting of the message
+type MessageFormat string
+
+// Available MessageFormat
+const (
+	Text     MessageFormat = ""
+	Markdown MessageFormat = "markdown"
+	HTML     MessageFormat = "html"
+)
 
 // User represents user information
 type User struct {
@@ -24,10 +36,10 @@ type ChatType string
 
 // Available ChatType
 const (
-	Private    = "private"
-	Group      = "group"
-	SuperGroup = "supergroup"
-	Channel    = "channel"
+	Private    ChatType = "private"
+	Group      ChatType = "group"
+	SuperGroup ChatType = "supergroup"
+	Channel    ChatType = "channel"
 )
 
 // Chat represents a chat session

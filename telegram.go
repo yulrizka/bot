@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,8 +18,10 @@ var poolDuration = 1 * time.Second
 
 // TResponse represents response from telegram
 type TResponse struct {
-	Ok     bool      `json:"ok"`
-	Result []TUpdate `json:"result"`
+	Ok          bool      `json:"ok"`
+	Result      []TUpdate `json:"result,omitempty"`
+	ErrorCode   int64     `json:"error_code,omitempty"`
+	Description string    `json:"description"`
 }
 
 // TUpdate represents an update event from telegram
@@ -27,13 +30,20 @@ type TUpdate struct {
 	Message  TMessage `json:"message"`
 }
 
-// TMessage is Telegram message
+// TMessage is Telegram incomming message
 type TMessage struct {
 	MessageID int64  `json:"message_id"`
 	From      TUser  `json:"from"`
 	Date      int64  `json:"date"`
 	Chat      TChat  `json:"chat"`
 	Text      string `json:"text"`
+}
+
+// TOutMessage is Telegram outgoing message
+type TOutMessage struct {
+	ChatID    string `json:"chat_id"`
+	Text      string `json:"text"`
+	ParseMode string `json:"parse_mode,omitempty"`
 }
 
 // TUser is Telegram User
@@ -81,11 +91,6 @@ func NewTelegram(key string) *Telegram {
 	}
 }
 
-// Start consuming from telegram
-func (t *Telegram) Start() {
-	t.pool()
-}
-
 //AddPlugin add processing module to telegram
 func (t *Telegram) AddPlugin(p Plugin) error {
 	input, err := p.Init(t.output)
@@ -95,6 +100,49 @@ func (t *Telegram) AddPlugin(p Plugin) error {
 	t.input[p] = input
 
 	return nil
+}
+
+// Start consuming from telegram
+func (t *Telegram) Start() {
+	go t.poolOutbox()
+	t.pool()
+}
+
+func (t *Telegram) poolOutbox() {
+	for {
+		select {
+		case m := <-t.output:
+			outMsg := TOutMessage{
+				ChatID: m.Chat.ID,
+				Text:   m.Text,
+			}
+
+			var b bytes.Buffer
+			if err := json.NewEncoder(&b).Encode(outMsg); err != nil {
+				log.Printf("ERROR, sendMessages encoding, %s", err)
+				continue
+			}
+			fmt.Printf("b = %s\n", b.Bytes())
+			resp, err := http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-9", &b)
+			if err != nil {
+				log.Printf("ERROR, sendMessages id:%s, %s", outMsg.ChatID, err)
+				continue
+			}
+			var tresp TResponse
+			if err := json.NewDecoder(resp.Body).Decode(&tresp); err != nil {
+				log.Printf("ERROR, decoding response id:%s, %s", outMsg.ChatID, err)
+				resp.Body.Close()
+				continue
+			}
+			if !tresp.Ok {
+				log.Printf("ERROR, sendMessage, code:%d description:%s", tresp.ErrorCode, tresp.Description)
+			}
+			resp.Body.Close()
+
+		case <-t.quit:
+			return
+		}
+	}
 }
 
 func (t *Telegram) pool() {

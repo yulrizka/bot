@@ -29,10 +29,15 @@ func (m *marcoPolo) Init(out chan bot.Message) (in chan *bot.Message, err error)
 	return m.in, nil
 }
 
-func (m marcoPolo) process() {
-	for m := range m.in {
-		if strings.TrimSpace(strings.ToLower(m.Text)) == "marco" {
-			fmt.Printf("POLO! -> %s (%s)\n", m.From.Username, m.From.ID)
+func (m *marcoPolo) process() {
+	for mIn := range m.in {
+		if strings.TrimSpace(strings.ToLower(mIn.Text)) == "marco" {
+			text := fmt.Sprintf("POLO! -> %s (%s)\n", mIn.From.Username, mIn.From.ID)
+
+			m.out <- bot.Message{
+				Chat: mIn.Chat,
+				Text: text,
+			}
 		}
 	}
 }
