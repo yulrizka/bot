@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -32,7 +33,7 @@ func (m *marcoPolo) Init(out chan bot.Message) (in chan *bot.Message, err error)
 func (m *marcoPolo) process() {
 	for mIn := range m.in {
 		if strings.TrimSpace(strings.ToLower(mIn.Text)) == "marco" {
-			text := fmt.Sprintf("POLO! -> %s (%s)\n", mIn.From.Username, mIn.From.ID)
+			text := fmt.Sprintf("POLO! -> %s (@%s)\n", mIn.From.FullName(), mIn.From.Username)
 
 			m.out <- bot.Message{
 				Chat: mIn.Chat,
@@ -43,6 +44,8 @@ func (m *marcoPolo) process() {
 }
 
 func main() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
+
 	key := os.Getenv("TELEGRAM_KEY")
 	if key == "" {
 		panic("TELEGRAM_KEY can not be empty")

@@ -1,6 +1,9 @@
 package bot
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Message represents chat message
 type Message struct {
@@ -29,6 +32,14 @@ type User struct {
 	FirstName string
 	LastName  string
 	Username  string
+}
+
+// FullName returns Firstname + LastName
+func (u User) FullName() string {
+	if u.LastName != "" {
+		return fmt.Sprintf("%s %s", u.FirstName, u.LastName)
+	}
+	return u.FirstName
 }
 
 // ChatType is type of the message

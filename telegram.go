@@ -18,10 +18,10 @@ var poolDuration = 1 * time.Second
 
 // TResponse represents response from telegram
 type TResponse struct {
-	Ok          bool      `json:"ok"`
-	Result      []TUpdate `json:"result,omitempty"`
-	ErrorCode   int64     `json:"error_code,omitempty"`
-	Description string    `json:"description"`
+	Ok          bool            `json:"ok"`
+	Result      json.RawMessage `json:"result,omitempty"`
+	ErrorCode   int64           `json:"error_code,omitempty"`
+	Description string          `json:"description"`
 }
 
 // TUpdate represents an update event from telegram
@@ -105,7 +105,7 @@ func (t *Telegram) AddPlugin(p Plugin) error {
 // Start consuming from telegram
 func (t *Telegram) Start() {
 	go t.poolOutbox()
-	t.pool()
+	t.poolInbox()
 }
 
 func (t *Telegram) poolOutbox() {
@@ -122,30 +122,21 @@ func (t *Telegram) poolOutbox() {
 				log.Printf("ERROR, sendMessages encoding, %s", err)
 				continue
 			}
-			fmt.Printf("b = %s\n", b.Bytes())
 			resp, err := http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-9", &b)
 			if err != nil {
 				log.Printf("ERROR, sendMessages id:%s, %s", outMsg.ChatID, err)
 				continue
 			}
-			var tresp TResponse
-			if err := json.NewDecoder(resp.Body).Decode(&tresp); err != nil {
-				log.Printf("ERROR, decoding response id:%s, %s", outMsg.ChatID, err)
-				resp.Body.Close()
-				continue
+			if err := t.parseOutbox(resp, outMsg.ChatID); err != nil {
+				log.Printf("ERROR parsing sendMessage response, %s", err)
 			}
-			if !tresp.Ok {
-				log.Printf("ERROR, sendMessage, code:%d description:%s", tresp.ErrorCode, tresp.Description)
-			}
-			resp.Body.Close()
-
 		case <-t.quit:
 			return
 		}
 	}
 }
 
-func (t *Telegram) pool() {
+func (t *Telegram) poolInbox() {
 	timer := time.NewTicker(poolDuration)
 	for {
 		select {
@@ -155,8 +146,8 @@ func (t *Telegram) pool() {
 				log.Printf("ERROR getUpdates, %s", err)
 				continue
 			}
-			if err := t.parse(resp); err != nil {
-				log.Printf("ERROR parsing response, %s", err)
+			if err := t.parseInbox(resp); err != nil {
+				log.Printf("ERROR parsing updates response, %s", err)
 			}
 		case <-t.quit:
 			return
@@ -164,7 +155,7 @@ func (t *Telegram) pool() {
 	}
 }
 
-func (t *Telegram) parse(resp *http.Response) error {
+func (t *Telegram) parseInbox(resp *http.Response) error {
 	defer resp.Body.Close()
 
 	decoder := json.NewDecoder(resp.Body)
@@ -174,10 +165,13 @@ func (t *Telegram) parse(resp *http.Response) error {
 	}
 
 	if !tresp.Ok {
+		log.Printf("ERROR parseInbox code:%d, %s", tresp.ErrorCode, tresp.Description)
 		return nil
 	}
 
-	for _, update := range tresp.Result {
+	var results []TUpdate
+	json.Unmarshal(tresp.Result, &results)
+	for _, update := range results {
 		m := update.Message
 		t.lastUpdate = update.UpdateID
 
@@ -204,6 +198,20 @@ func (t *Telegram) parse(resp *http.Response) error {
 				log.Printf("WARN %s input channel is full, skiping message %s", plugin.Name(), msg.ID)
 			}
 		}
+	}
+
+	return nil
+}
+
+func (t *Telegram) parseOutbox(resp *http.Response, chatID string) error {
+	defer resp.Body.Close()
+
+	var tresp TResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tresp); err != nil {
+		return fmt.Errorf("decoding response failed id:%s, %s", chatID, err)
+	}
+	if !tresp.Ok {
+		return fmt.Errorf("code:%d description:%s", tresp.ErrorCode, tresp.Description)
 	}
 
 	return nil
