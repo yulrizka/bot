@@ -37,6 +37,7 @@ type TMessage struct {
 	Date      int64  `json:"date"`
 	Chat      TChat  `json:"chat"`
 	Text      string `json:"text"`
+	ParseMode string `json:"parse_mode,omitempty"`
 }
 
 // TOutMessage is Telegram outgoing message
@@ -113,8 +114,9 @@ func (t *Telegram) poolOutbox() {
 		select {
 		case m := <-t.output:
 			outMsg := TOutMessage{
-				ChatID: m.Chat.ID,
-				Text:   m.Text,
+				ChatID:    m.Chat.ID,
+				Text:      m.Text,
+				ParseMode: string(m.Format),
 			}
 
 			var b bytes.Buffer
