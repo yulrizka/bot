@@ -4,13 +4,25 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/uber-go/zap"
 )
 
-var poolDuration = 1 * time.Second
+var (
+	poolDuration = 1 * time.Second
+	log          zap.Logger
+)
+
+func init() {
+	log = zap.NewJSON(zap.AddCaller(), zap.AddStacks(zap.FatalLevel))
+}
+
+func SetLogger(l zap.Logger) {
+	log = l
+}
 
 /**
  * Telegram API specific data structure
@@ -32,12 +44,13 @@ type TUpdate struct {
 
 // TMessage is Telegram incomming message
 type TMessage struct {
-	MessageID int64  `json:"message_id"`
-	From      TUser  `json:"from"`
-	Date      int64  `json:"date"`
-	Chat      TChat  `json:"chat"`
-	Text      string `json:"text"`
-	ParseMode string `json:"parse_mode,omitempty"`
+	MessageID       int64  `json:"message_id"`
+	From            TUser  `json:"from"`
+	Date            int64  `json:"date"`
+	Chat            TChat  `json:"chat"`
+	Text            string `json:"text"`
+	ParseMode       string `json:"parse_mode,omitempty"`
+	MigrateToChatID *int64 `json:"migrate_to_chat_id,omitempty"`
 }
 
 // TOutMessage is Telegram outgoing message
@@ -66,8 +79,8 @@ type TChat struct {
 var TChatTypeMap = map[string]ChatType{
 	"private":    Private,
 	"group":      Group,
-	"SuperGroup": SuperGroup,
-	"Channel":    Channel,
+	"supergroup": SuperGroup,
+	"channel":    Channel,
 }
 
 // Telegram API
@@ -82,7 +95,7 @@ type Telegram struct {
 // NewTelegram creates telegram API Client
 func NewTelegram(key string) *Telegram {
 	if key == "" {
-		log.Fatalf("telegram API key must not be empty")
+		log.Fatal("telegram API key must not be empty")
 	}
 	return &Telegram{
 		url:    fmt.Sprintf("https://api.telegram.org/bot%s", key),
@@ -121,16 +134,17 @@ func (t *Telegram) poolOutbox() {
 
 			var b bytes.Buffer
 			if err := json.NewEncoder(&b).Encode(outMsg); err != nil {
-				log.Printf("ERROR, sendMessages encoding, %s", err)
+				log.Error("encoding message", zap.Error(err))
 				continue
 			}
-			resp, err := http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-9", &b)
+			log.Debug("sendMessage", zap.String("msg", b.String()))
+			resp, err := http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-10", &b)
 			if err != nil {
-				log.Printf("ERROR, sendMessages id:%s, %s", outMsg.ChatID, err)
+				log.Error("sendMessage failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err))
 				continue
 			}
 			if err := t.parseOutbox(resp, outMsg.ChatID); err != nil {
-				log.Printf("ERROR parsing sendMessage response, %s", err)
+				log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err))
 			}
 		case <-t.quit:
 			return
@@ -145,11 +159,11 @@ func (t *Telegram) poolInbox() {
 		case <-timer.C:
 			resp, err := http.Get(fmt.Sprintf("%s/getUpdates?offset=%d", t.url, t.lastUpdate+1))
 			if err != nil {
-				log.Printf("ERROR getUpdates, %s", err)
+				log.Error("getUpdates failed", zap.Error(err))
 				continue
 			}
 			if err := t.parseInbox(resp); err != nil {
-				log.Printf("ERROR parsing updates response, %s", err)
+				log.Error("parsing updates response failed", zap.Error(err))
 			}
 		case <-t.quit:
 			return
@@ -167,7 +181,7 @@ func (t *Telegram) parseInbox(resp *http.Response) error {
 	}
 
 	if !tresp.Ok {
-		log.Printf("ERROR parseInbox code:%d, %s", tresp.ErrorCode, tresp.Description)
+		log.Error("parsing response failed", zap.Int64("errorCode", tresp.ErrorCode), zap.String("description", tresp.Description))
 		return nil
 	}
 
@@ -189,15 +203,21 @@ func (t *Telegram) parseInbox(resp *http.Response) error {
 			Chat: Chat{
 				ID:       strconv.FormatInt(m.Chat.ID, 10),
 				Type:     TChatTypeMap[m.Chat.Type],
+				Title:    m.Chat.Title,
 				Username: m.Chat.Username,
 			},
 			Text: m.Text,
 		}
+		if m.MigrateToChatID != nil {
+			newChanID := strconv.FormatInt(*(m.MigrateToChatID), 10)
+			msg.Extra = ChannelMigrated{FromID: msg.Chat.ID, ToID: newChanID}
+		}
+		log.Debug("update", zap.Object("msg", msg))
 		for plugin, ch := range t.input {
 			select {
 			case ch <- &msg:
 			default:
-				log.Printf("WARN %s input channel is full, skiping message %s", plugin.Name(), msg.ID)
+				log.Warn("input channel full, skipping message", zap.String("plugin", plugin.Name()), zap.String("msgID", msg.ID))
 			}
 		}
 	}

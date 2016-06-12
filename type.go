@@ -14,6 +14,12 @@ type Message struct {
 	Text           string
 	Format         MessageFormat
 	ReplyMessageID string
+	Extra          interface{}
+}
+
+type ChannelMigrated struct {
+	FromID string
+	ToID   string
 }
 
 // MessageFormat represents formatting of the message
@@ -57,6 +63,7 @@ const (
 type Chat struct {
 	ID       string
 	Type     ChatType
+	Title    string
 	Username string
 }
 
