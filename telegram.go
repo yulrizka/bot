@@ -86,7 +86,7 @@ var TChatTypeMap = map[string]ChatType{
 // Telegram API
 type Telegram struct {
 	url        string
-	input      map[Plugin]chan *Message
+	input      map[Plugin]chan interface{}
 	output     chan Message
 	quit       chan struct{}
 	lastUpdate int64
@@ -99,7 +99,7 @@ func NewTelegram(key string) *Telegram {
 	}
 	return &Telegram{
 		url:    fmt.Sprintf("https://api.telegram.org/bot%s", key),
-		input:  make(map[Plugin]chan *Message),
+		input:  make(map[Plugin]chan interface{}),
 		output: make(chan Message),
 		quit:   make(chan struct{}),
 	}
@@ -191,7 +191,8 @@ func (t *Telegram) parseInbox(resp *http.Response) error {
 		m := update.Message
 		t.lastUpdate = update.UpdateID
 
-		msg := Message{
+		var msg interface{}
+		message := Message{
 			ID: strconv.FormatInt(m.MessageID, 10),
 			From: User{
 				ID:        strconv.FormatInt(m.From.ID, 10),
@@ -210,14 +211,20 @@ func (t *Telegram) parseInbox(resp *http.Response) error {
 		}
 		if m.MigrateToChatID != nil {
 			newChanID := strconv.FormatInt(*(m.MigrateToChatID), 10)
-			msg.Extra = ChannelMigrated{FromID: msg.Chat.ID, ToID: newChanID}
+			chanMigratedMsg := ChannelMigratedMessage{
+				Message: message,
+				FromID:  message.Chat.ID,
+				ToID:    newChanID,
+			}
+			msg = &chanMigratedMsg
 		}
+		msg = &message
 		log.Debug("update", zap.Object("msg", msg))
 		for plugin, ch := range t.input {
 			select {
-			case ch <- &msg:
+			case ch <- msg:
 			default:
-				log.Warn("input channel full, skipping message", zap.String("plugin", plugin.Name()), zap.String("msgID", msg.ID))
+				log.Warn("input channel full, skipping message", zap.String("plugin", plugin.Name()), zap.String("msgID", message.ID))
 			}
 		}
 	}

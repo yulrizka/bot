@@ -14,10 +14,10 @@ type Message struct {
 	Text           string
 	Format         MessageFormat
 	ReplyMessageID string
-	Extra          interface{}
 }
 
-type ChannelMigrated struct {
+type ChannelMigratedMessage struct {
+	Message
 	FromID string
 	ToID   string
 }
@@ -70,5 +70,5 @@ type Chat struct {
 // Plugin is pluggable module to process messages
 type Plugin interface {
 	Name() string
-	Init(out chan Message) (chan *Message, error)
+	Init(out chan Message) (chan interface{}, error)
 }

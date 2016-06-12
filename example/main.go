@@ -11,7 +11,7 @@ import (
 
 // marcoPolo is an example plugin that will reply text marco with polo
 type marcoPolo struct {
-	in  chan *bot.Message
+	in  chan interface{}
 	out chan bot.Message
 }
 
@@ -23,21 +23,22 @@ func (*marcoPolo) Name() string {
 // input channel which is an inbox for new channel.
 // The reason 'in' is a return value so that plugin can specify the size
 // of the channel
-func (m *marcoPolo) Init(out chan bot.Message) (in chan *bot.Message, err error) {
-	m.in = make(chan *bot.Message, 100)
+func (m *marcoPolo) Init(out chan bot.Message) (in chan interface{}, err error) {
+	m.in = make(chan interface{}, 100)
 	m.out = out
 	go m.process()
 	return m.in, nil
 }
 
 func (m *marcoPolo) process() {
-	for mIn := range m.in {
-		if strings.TrimSpace(strings.ToLower(mIn.Text)) == "marco" {
-			text := fmt.Sprintf("POLO! -> %s (@%s)\n", mIn.From.FullName(), mIn.From.Username)
-
-			m.out <- bot.Message{
-				Chat: mIn.Chat,
-				Text: text,
+	for rawMsg := range m.in {
+		if message, ok := rawMsg.(*bot.Message); ok {
+			if strings.TrimSpace(strings.ToLower(message.Text)) == "marco" {
+				text := fmt.Sprintf("POLO! -> %s (@%s)\n", message.From.FullName(), message.From.Username)
+				m.out <- bot.Message{
+					Chat: message.Chat,
+					Text: text,
+				}
 			}
 		}
 	}
