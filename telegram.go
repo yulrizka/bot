@@ -144,7 +144,7 @@ func (t *Telegram) poolOutbox() {
 				continue
 			}
 			if err := t.parseOutbox(resp, outMsg.ChatID); err != nil {
-				log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err))
+				log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", outMsg))
 			}
 		case <-t.quit:
 			return
