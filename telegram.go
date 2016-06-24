@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	poolDuration = 1 * time.Second
-	log          zap.Logger
+	poolDuration     = 1 * time.Second
+	log              zap.Logger
+	maxMsgPerUpdates = 100
 )
 
 func init() {
@@ -153,36 +154,39 @@ func (t *Telegram) poolOutbox() {
 }
 
 func (t *Telegram) poolInbox() {
-	timer := time.NewTicker(poolDuration)
 	for {
 		select {
-		case <-timer.C:
+		case <-t.quit:
+			return
+		default:
 			resp, err := http.Get(fmt.Sprintf("%s/getUpdates?offset=%d", t.url, t.lastUpdate+1))
 			if err != nil {
 				log.Error("getUpdates failed", zap.Error(err))
 				continue
 			}
-			if err := t.parseInbox(resp); err != nil {
+			nMsg, err := t.parseInbox(resp)
+			if err != nil {
 				log.Error("parsing updates response failed", zap.Error(err))
 			}
-		case <-t.quit:
-			return
+			if nMsg != maxMsgPerUpdates {
+				time.Sleep(poolDuration)
+			}
 		}
 	}
 }
 
-func (t *Telegram) parseInbox(resp *http.Response) error {
+func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 	defer resp.Body.Close()
 
 	decoder := json.NewDecoder(resp.Body)
 	var tresp TResponse
 	if err := decoder.Decode(&tresp); err != nil {
-		return err
+		return 0, err
 	}
 
 	if !tresp.Ok {
 		log.Error("parsing response failed", zap.Int64("errorCode", tresp.ErrorCode), zap.String("description", tresp.Description))
-		return nil
+		return 0, nil
 	}
 
 	var results []TUpdate
@@ -229,7 +233,7 @@ func (t *Telegram) parseInbox(resp *http.Response) error {
 		}
 	}
 
-	return nil
+	return len(results), nil
 }
 
 func (t *Telegram) parseOutbox(resp *http.Response, chatID string) error {
