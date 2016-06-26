@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rcrowley/go-metrics"
 	"github.com/uber-go/zap"
 )
 
@@ -15,6 +16,10 @@ var (
 	poolDuration     = 1 * time.Second
 	log              zap.Logger
 	maxMsgPerUpdates = 100
+
+	// stats
+	updateCount      = metrics.NewRegisteredCounter("telegram.updates.count", metrics.DefaultRegistry)
+	msgPerUpdateRate = metrics.NewRegisteredGauge("telegram.messagePerUpdate.rate", metrics.DefaultRegistry)
 )
 
 func init() {
@@ -164,10 +169,12 @@ func (t *Telegram) poolInbox() {
 				log.Error("getUpdates failed", zap.Error(err))
 				continue
 			}
+			updateCount.Inc(1)
 			nMsg, err := t.parseInbox(resp)
 			if err != nil {
 				log.Error("parsing updates response failed", zap.Error(err))
 			}
+			msgPerUpdateRate.Update(int64(nMsg))
 			if nMsg != maxMsgPerUpdates {
 				time.Sleep(poolDuration)
 			}
