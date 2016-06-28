@@ -149,6 +149,7 @@ func (t *Telegram) poolOutbox() {
 				log.Error("sendMessage failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err))
 				continue
 			}
+			metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
 			if err := t.parseOutbox(resp, outMsg.ChatID); err != nil {
 				log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", outMsg))
 			}
@@ -169,6 +170,7 @@ func (t *Telegram) poolInbox() {
 				log.Error("getUpdates failed", zap.Error(err))
 				continue
 			}
+			metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.getUpdates.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
 			updateCount.Inc(1)
 			nMsg, err := t.parseInbox(resp)
 			if err != nil {
