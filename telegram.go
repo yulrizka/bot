@@ -19,7 +19,7 @@ var (
 
 	// stats
 	updateCount      = metrics.NewRegisteredCounter("telegram.updates.count", metrics.DefaultRegistry)
-	msgPerUpdateRate = metrics.NewRegisteredGauge("telegram.messagePerUpdate.rate", metrics.DefaultRegistry)
+	msgPerUpdateRate = metrics.NewRegisteredCounter("telegram.messagePerUpdate", metrics.DefaultRegistry)
 )
 
 func init() {
@@ -176,7 +176,7 @@ func (t *Telegram) poolInbox() {
 			if err != nil {
 				log.Error("parsing updates response failed", zap.Error(err))
 			}
-			msgPerUpdateRate.Update(int64(nMsg))
+			msgPerUpdateRate.Inc(int64(nMsg))
 			if nMsg != maxMsgPerUpdates {
 				time.Sleep(poolDuration)
 			}
