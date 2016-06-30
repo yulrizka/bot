@@ -18,8 +18,10 @@ var (
 	maxMsgPerUpdates = 100
 
 	// stats
-	updateCount      = metrics.NewRegisteredCounter("telegram.updates.count", metrics.DefaultRegistry)
-	msgPerUpdateRate = metrics.NewRegisteredCounter("telegram.messagePerUpdate", metrics.DefaultRegistry)
+	updateCount         = metrics.NewRegisteredCounter("telegram.updates.count", metrics.DefaultRegistry)
+	msgPerUpdateRate    = metrics.NewRegisteredCounter("telegram.messagePerUpdate", metrics.DefaultRegistry)
+	updateDuration      = metrics.NewRegisteredTimer("telegram.updates.duration", metrics.DefaultRegistry)
+	sendMessageDuration = metrics.NewRegisteredTimer("telegram.sendMessage.duration", metrics.DefaultRegistry)
 )
 
 func init() {
@@ -143,15 +145,17 @@ func (t *Telegram) poolOutbox() {
 				log.Error("encoding message", zap.Error(err))
 				continue
 			}
-			log.Debug("sendMessage", zap.String("msg", b.String()))
+			started := time.Now()
 			resp, err := http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-10", &b)
 			if err != nil {
 				log.Error("sendMessage failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err))
+				sendMessageDuration.UpdateSince(started)
 				continue
 			}
+			sendMessageDuration.UpdateSince(started)
 			metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
 			if err := t.parseOutbox(resp, outMsg.ChatID); err != nil {
-				log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", outMsg))
+				log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", b.String()))
 			}
 		case <-t.quit:
 			return
@@ -165,13 +169,17 @@ func (t *Telegram) poolInbox() {
 		case <-t.quit:
 			return
 		default:
+			started := time.Now()
 			resp, err := http.Get(fmt.Sprintf("%s/getUpdates?offset=%d", t.url, t.lastUpdate+1))
 			if err != nil {
 				log.Error("getUpdates failed", zap.Error(err))
+				updateDuration.UpdateSince(started)
 				continue
 			}
-			metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.getUpdates.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
+			updateDuration.UpdateSince(started)
 			updateCount.Inc(1)
+			metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.getUpdates.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
+
 			nMsg, err := t.parseInbox(resp)
 			if err != nil {
 				log.Error("parsing updates response failed", zap.Error(err))
