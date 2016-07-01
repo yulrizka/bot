@@ -149,6 +149,7 @@ func (t *Telegram) poolOutbox() {
 						continue
 					}
 					started := time.Now()
+					jsonMsg := b.String()
 					resp, err := http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-10", &b)
 					if err != nil {
 						log.Error("sendMessage failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err))
@@ -158,7 +159,7 @@ func (t *Telegram) poolOutbox() {
 					sendMessageDuration.UpdateSince(started)
 					metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
 					if err := t.parseOutbox(resp, outMsg.ChatID); err != nil {
-						log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", b.String()))
+						log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", jsonMsg))
 					}
 				case <-t.quit:
 					return
