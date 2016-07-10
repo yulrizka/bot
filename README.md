@@ -13,3 +13,4 @@ example project:
 
 * [fam100](https://github.com/yulrizka/fam100) a game of family feud
 
+**Still experimental, interface is not stable yet**
