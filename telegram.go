@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -53,13 +54,14 @@ type TUpdate struct {
 
 // TMessage is Telegram incomming message
 type TMessage struct {
-	MessageID       int64  `json:"message_id"`
-	From            TUser  `json:"from"`
-	Date            int64  `json:"date"`
-	Chat            TChat  `json:"chat"`
-	Text            string `json:"text"`
-	ParseMode       string `json:"parse_mode,omitempty"`
-	MigrateToChatID *int64 `json:"migrate_to_chat_id,omitempty"`
+	MessageID       int64     `json:"message_id"`
+	From            TUser     `json:"from"`
+	Date            int64     `json:"date"`
+	Chat            TChat     `json:"chat"`
+	Text            string    `json:"text"`
+	ParseMode       string    `json:"parse_mode,omitempty"`
+	MigrateToChatID *int64    `json:"migrate_to_chat_id,omitempty"`
+	ReceivedAt      time.Time `json:"-"`
 }
 
 // TOutMessage is Telegram outgoing message
@@ -158,7 +160,7 @@ func (t *Telegram) poolOutbox() {
 					}
 					sendMessageDuration.UpdateSince(started)
 					metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
-					if err := t.parseOutbox(resp, outMsg.ChatID); err != nil {
+					if err := parseResponse(resp); err != nil {
 						log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", jsonMsg))
 					}
 				case <-t.quit:
@@ -201,6 +203,7 @@ func (t *Telegram) poolInbox() {
 func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 	defer resp.Body.Close()
 
+	receivedAt := time.Now()
 	decoder := json.NewDecoder(resp.Body)
 	var tresp TResponse
 	if err := decoder.Decode(&tresp); err != nil {
@@ -234,14 +237,16 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 				Title:    m.Chat.Title,
 				Username: m.Chat.Username,
 			},
-			Text: m.Text,
+			Text:       m.Text,
+			ReceivedAt: receivedAt,
 		}
 		if m.MigrateToChatID != nil {
 			newChanID := strconv.FormatInt(*(m.MigrateToChatID), 10)
 			chanMigratedMsg := ChannelMigratedMessage{
-				Message: message,
-				FromID:  message.Chat.ID,
-				ToID:    newChanID,
+				Message:    message,
+				FromID:     message.Chat.ID,
+				ToID:       newChanID,
+				ReceivedAt: receivedAt,
 			}
 			msg = &chanMigratedMsg
 		}
@@ -259,12 +264,29 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 	return len(results), nil
 }
 
-func (t *Telegram) parseOutbox(resp *http.Response, chatID string) error {
+func (t *Telegram) Leave(chanID string) error {
+	url := fmt.Sprintf("%s/leaveChat?chat_id=%s", t.url, url.QueryEscape(chanID))
+	fmt.Printf("url = %+v\n", url)
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Error("leave failed", zap.Error(err))
+		return err
+	}
+	defer resp.Body.Close()
+
+	if err := parseResponse(resp); err != nil {
+		log.Error("leave invalid response", zap.Error(err))
+	}
+
+	return nil
+}
+
+func parseResponse(resp *http.Response) error {
 	defer resp.Body.Close()
 
 	var tresp TResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tresp); err != nil {
-		return fmt.Errorf("decoding response failed id:%s, %s", chatID, err)
+		return fmt.Errorf("decoding response failed %s", err)
 	}
 	if !tresp.Ok {
 		return fmt.Errorf("code:%d description:%s", tresp.ErrorCode, tresp.Description)

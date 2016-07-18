@@ -14,12 +14,14 @@ type Message struct {
 	Text           string
 	Format         MessageFormat
 	ReplyMessageID string
+	ReceivedAt     time.Time
 }
 
 type ChannelMigratedMessage struct {
 	Message
-	FromID string
-	ToID   string
+	FromID     string
+	ToID       string
+	ReceivedAt time.Time
 }
 
 // MessageFormat represents formatting of the message
