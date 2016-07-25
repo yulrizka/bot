@@ -48,8 +48,8 @@ type TResponse struct {
 
 // TUpdate represents an update event from telegram
 type TUpdate struct {
-	UpdateID int64    `json:"update_id"`
-	Message  TMessage `json:"message"`
+	UpdateID int64           `json:"update_id"`
+	Message  json.RawMessage `json:"message"`
 }
 
 // TMessage is Telegram incomming message
@@ -218,7 +218,8 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 	var results []TUpdate
 	json.Unmarshal(tresp.Result, &results)
 	for _, update := range results {
-		m := update.Message
+		var m TMessage
+		json.Unmarshal(update.Message, &m)
 		t.lastUpdate = update.UpdateID
 
 		var msg interface{}
@@ -239,6 +240,7 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 			},
 			Text:       m.Text,
 			ReceivedAt: receivedAt,
+			Raw:        update.Message,
 		}
 		if m.MigrateToChatID != nil {
 			newChanID := strconv.FormatInt(*(m.MigrateToChatID), 10)

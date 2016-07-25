@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -15,6 +16,7 @@ type Message struct {
 	Format         MessageFormat
 	ReplyMessageID string
 	ReceivedAt     time.Time
+	Raw            json.RawMessage `json:"-"`
 }
 
 type ChannelMigratedMessage struct {
