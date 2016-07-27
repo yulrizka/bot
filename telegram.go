@@ -14,6 +14,7 @@ import (
 )
 
 var (
+	OutboxBufferSize = 100
 	poolDuration     = 1 * time.Second
 	log              zap.Logger
 	maxMsgPerUpdates = 100
@@ -111,7 +112,7 @@ func NewTelegram(key string) *Telegram {
 	return &Telegram{
 		url:    fmt.Sprintf("https://api.telegram.org/bot%s", key),
 		input:  make(map[Plugin]chan interface{}),
-		output: make(chan Message),
+		output: make(chan Message, OutboxBufferSize),
 		quit:   make(chan struct{}),
 	}
 }
