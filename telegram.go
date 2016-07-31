@@ -168,8 +168,13 @@ func (t *Telegram) poolOutbox() {
 					var tresp TResponse
 					var err error
 					for {
-						if m.Retry < 0 || (!m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter)) {
-							log.Error("message droped", zap.Object("msg", m), zap.Int("retry", m.Retry))
+						if m.Retry < 0 {
+							log.Error("message dropped, not retrying", zap.Object("msg", m), zap.Int("retry", m.Retry))
+							continue NEXTMESSAGE
+						}
+
+						if !m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter) {
+							log.Error("message dropped, discarded", zap.Object("msg", m))
 							continue NEXTMESSAGE
 						}
 						m.Retry--
@@ -183,7 +188,7 @@ func (t *Telegram) poolOutbox() {
 								continue
 							}
 
-							log.Error("sendMessage failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err))
+							log.Error("sendMessage failed, dropped", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", m))
 							continue NEXTMESSAGE
 						}
 						metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
