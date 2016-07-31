@@ -26,6 +26,9 @@ var (
 	msgPerUpdateRate    = metrics.NewRegisteredCounter("telegram.messagePerUpdate", metrics.DefaultRegistry)
 	updateDuration      = metrics.NewRegisteredTimer("telegram.updates.duration", metrics.DefaultRegistry)
 	sendMessageDuration = metrics.NewRegisteredTimer("telegram.sendMessage.duration", metrics.DefaultRegistry)
+
+	// compile time info
+	VERSION = ""
 )
 
 func init() {
