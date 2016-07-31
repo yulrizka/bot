@@ -17,6 +17,8 @@ type Message struct {
 	ReplyMessageID string
 	ReceivedAt     time.Time
 	Raw            json.RawMessage `json:"-"`
+	Retry          int             `json:"-"`
+	DiscardAfter   time.Time       `json:"-"`
 }
 
 type ChannelMigratedMessage struct {

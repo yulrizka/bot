@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -137,9 +138,15 @@ func (t *Telegram) Start() {
 func (t *Telegram) poolOutbox() {
 	for i := 0; i < outboxWorker; i++ {
 		go func() {
+
+		NEXTMESSAGE:
 			for {
 				select {
 				case m := <-t.output:
+					if !m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter) {
+						continue
+					}
+
 					outMsg := TOutMessage{
 						ChatID:    m.Chat.ID,
 						Text:      m.Text,
@@ -153,14 +160,37 @@ func (t *Telegram) poolOutbox() {
 					}
 					started := time.Now()
 					jsonMsg := b.String()
-					resp, err := http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-10", &b)
-					if err != nil {
-						log.Error("sendMessage failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err))
-						sendMessageDuration.UpdateSince(started)
-						continue
+
+					var resp *http.Response
+					var err error
+					for m.Retry >= 0 {
+						resp, err = http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-10", &b)
+						if err != nil {
+
+							// check for timeout
+							if netError, ok := err.(net.Error); ok && netError.Timeout() {
+								m.Retry--
+								log.Error("sendMessage timeout", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Int("retry", m.Retry))
+								continue
+							}
+
+							log.Error("sendMessage failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err))
+							continue NEXTMESSAGE
+						}
+						metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
+
+						if resp.StatusCode == 429 { // rate limited by telegram
+							m.Retry--
+							if err := parseResponse(resp); err != nil {
+								log.Error("sendMessage 429", zap.Error(err))
+							}
+							continue
+						}
+
+						break
 					}
+
 					sendMessageDuration.UpdateSince(started)
-					metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
 					if err := parseResponse(resp); err != nil {
 						log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", jsonMsg))
 					}
