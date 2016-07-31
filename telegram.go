@@ -144,6 +144,7 @@ func (t *Telegram) poolOutbox() {
 				select {
 				case m := <-t.output:
 					if !m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter) {
+						log.Warn("discarded message", zap.Object("msg", m))
 						continue
 					}
 
@@ -164,6 +165,10 @@ func (t *Telegram) poolOutbox() {
 					var resp *http.Response
 					var err error
 					for m.Retry >= 0 {
+						if !m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter) {
+							log.Warn("discarded message", zap.Object("msg", m))
+							continue NEXTMESSAGE
+						}
 						resp, err = http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-10", &b)
 						if err != nil {
 
@@ -181,9 +186,18 @@ func (t *Telegram) poolOutbox() {
 
 						if resp.StatusCode == 429 { // rate limited by telegram
 							m.Retry--
-							if err := parseResponse(resp); err != nil {
+							if r, err := parseResponse(resp); err != nil {
 								log.Error("sendMessage 429", zap.Error(err))
+								var delay int
+								if n, err := fmt.Sscanf(r.Description, "Too Many Requests: retry after %d", &delay); err != nil && n == 1 {
+									if delay > 0 {
+										d := time.Duration(delay) * time.Second
+										log.Info("sendMessage delayed", zap.String("delay", d.String()))
+										time.Sleep(d)
+									}
+								}
 							}
+
 							continue
 						}
 
@@ -191,7 +205,7 @@ func (t *Telegram) poolOutbox() {
 					}
 
 					sendMessageDuration.UpdateSince(started)
-					if err := parseResponse(resp); err != nil {
+					if _, err := parseResponse(resp); err != nil {
 						log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", jsonMsg))
 					}
 				case <-t.quit:
@@ -307,23 +321,23 @@ func (t *Telegram) Leave(chanID string) error {
 	}
 	defer resp.Body.Close()
 
-	if err := parseResponse(resp); err != nil {
+	if _, err := parseResponse(resp); err != nil {
 		log.Error("leave invalid response", zap.Error(err))
 	}
 
 	return nil
 }
 
-func parseResponse(resp *http.Response) error {
+func parseResponse(resp *http.Response) (TResponse, error) {
 	defer resp.Body.Close()
 
 	var tresp TResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tresp); err != nil {
-		return fmt.Errorf("decoding response failed %s", err)
+		return tresp, fmt.Errorf("decoding response failed %s", err)
 	}
 	if !tresp.Ok {
-		return fmt.Errorf("code:%d description:%s", tresp.ErrorCode, tresp.Description)
+		return tresp, fmt.Errorf("code:%d description:%s", tresp.ErrorCode, tresp.Description)
 	}
 
-	return nil
+	return tresp, nil
 }
