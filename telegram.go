@@ -162,19 +162,20 @@ func (t *Telegram) poolOutbox() {
 					started := time.Now()
 					jsonMsg := b.String()
 
-					var resp *http.Response
+					var tresp TResponse
 					var err error
-					for m.Retry >= 0 {
-						if !m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter) {
-							log.Warn("discarded message", zap.Object("msg", m))
+					for {
+						if m.Retry < 0 || (!m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter)) {
+							log.Error("message droped", zap.Object("msg", m), zap.Int("retry", m.Retry))
 							continue NEXTMESSAGE
 						}
+						m.Retry--
+
+						var resp *http.Response
 						resp, err = http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-10", &b)
 						if err != nil {
-
 							// check for timeout
 							if netError, ok := err.(net.Error); ok && netError.Timeout() {
-								m.Retry--
 								log.Error("sendMessage timeout", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Int("retry", m.Retry))
 								continue
 							}
@@ -185,27 +186,27 @@ func (t *Telegram) poolOutbox() {
 						metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
 
 						if resp.StatusCode == 429 { // rate limited by telegram
-							m.Retry--
-							if r, err := parseResponse(resp); err != nil {
+							if tresp, err = parseResponse(resp); err != nil {
 								log.Error("sendMessage 429", zap.Error(err))
 								var delay int
-								if n, err := fmt.Sscanf(r.Description, "Too Many Requests: retry after %d", &delay); err != nil && n == 1 {
+								if n, err := fmt.Sscanf(tresp.Description, "Too Many Requests: retry after %d", &delay); err != nil && n == 1 {
 									if delay > 0 {
 										d := time.Duration(delay) * time.Second
-										log.Info("sendMessage delayed", zap.String("delay", d.String()))
+										log.Warn("sendMessage delayed", zap.String("delay", d.String()))
 										time.Sleep(d)
 									}
 								}
 							}
-
+							resp.Body.Close()
 							continue
 						}
 
+						resp.Body.Close()
 						break
 					}
 
 					sendMessageDuration.UpdateSince(started)
-					if _, err := parseResponse(resp); err != nil {
+					if err != nil {
 						log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", jsonMsg))
 					}
 				case <-t.quit:
@@ -329,7 +330,6 @@ func (t *Telegram) Leave(chanID string) error {
 }
 
 func parseResponse(resp *http.Response) (TResponse, error) {
-	defer resp.Body.Close()
 
 	var tresp TResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tresp); err != nil {
