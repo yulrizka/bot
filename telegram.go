@@ -332,6 +332,7 @@ func (t *Telegram) Leave(chanID string) error {
 
 	if _, err := parseResponse(resp); err != nil {
 		log.Error("leave invalid response", zap.Error(err))
+		return err
 	}
 
 	return nil
