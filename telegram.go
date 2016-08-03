@@ -22,10 +22,14 @@ var (
 	outboxWorker     = 2
 
 	// stats
+	msgPerUpdateCount   = metrics.NewRegisteredCounter("telegram.messagePerUpdate", metrics.DefaultRegistry)
 	updateCount         = metrics.NewRegisteredCounter("telegram.updates.count", metrics.DefaultRegistry)
-	msgPerUpdateRate    = metrics.NewRegisteredCounter("telegram.messagePerUpdate", metrics.DefaultRegistry)
 	updateDuration      = metrics.NewRegisteredTimer("telegram.updates.duration", metrics.DefaultRegistry)
 	sendMessageDuration = metrics.NewRegisteredTimer("telegram.sendMessage.duration", metrics.DefaultRegistry)
+	msgTimeoutCount     = metrics.NewRegisteredCounter("telegram.sendMessage.timeout", metrics.DefaultRegistry)
+	msgFailedCount      = metrics.NewRegisteredCounter("telegram.sendMessage.failed", metrics.DefaultRegistry)
+	msgDiscardedCount   = metrics.NewRegisteredCounter("telegram.sendMessage.discarded", metrics.DefaultRegistry)
+	msgDroppedCount     = metrics.NewRegisteredCounter("telegram.sendMessage.dropped", metrics.DefaultRegistry)
 
 	// compile time info
 	VERSION = ""
@@ -147,6 +151,7 @@ func (t *Telegram) poolOutbox() {
 				select {
 				case m := <-t.output:
 					if !m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter) {
+						msgDiscardedCount.Inc(1)
 						log.Warn("discarded message", zap.Object("msg", m))
 						continue
 					}
@@ -167,33 +172,44 @@ func (t *Telegram) poolOutbox() {
 
 					var tresp TResponse
 					var err error
+					retries := m.Retry
 					for {
-						if m.Retry < 0 {
-							log.Error("message dropped, not retrying", zap.Object("msg", m), zap.Int("retry", m.Retry))
+						if retries < 0 {
+							if m.Retry > 0 {
+								metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.droppedAfter.%d", m.Retry), metrics.DefaultRegistry).Inc(1)
+							}
+							log.Error("message dropped, not retrying", zap.Object("msg", m))
+							msgDroppedCount.Inc(1)
 							continue NEXTMESSAGE
 						}
 
 						if !m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter) {
 							log.Error("message dropped, discarded", zap.Object("msg", m))
+							msgDiscardedCount.Inc(1)
 							continue NEXTMESSAGE
 						}
-						m.Retry--
+						retries--
 
 						var resp *http.Response
 						resp, err = http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-10", &b)
 						if err != nil {
+							msgFailedCount.Inc(1)
 							// check for timeout
 							if netError, ok := err.(net.Error); ok && netError.Timeout() {
-								log.Error("sendMessage timeout", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Int("retry", m.Retry))
+								msgTimeoutCount.Inc(1)
+								log.Error("sendMessage timeout", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Int("retries", retries))
 								continue
 							}
 
+							// unknown error
+							msgDroppedCount.Inc(1)
 							log.Error("sendMessage failed, dropped", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", m))
 							continue NEXTMESSAGE
 						}
 						metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
 
 						if resp.StatusCode == 429 { // rate limited by telegram
+							msgFailedCount.Inc(1)
 							if tresp, err = parseResponse(resp); err != nil {
 								log.Error("sendMessage 429", zap.Error(err))
 								var delay int
@@ -212,6 +228,9 @@ func (t *Telegram) poolOutbox() {
 						resp.Body.Close()
 						break
 					}
+
+					attempt := retries - m.Retry + 1
+					metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.retry.%d", attempt), metrics.DefaultRegistry).Inc(1)
 
 					sendMessageDuration.UpdateSince(started)
 					if err != nil {
@@ -246,7 +265,7 @@ func (t *Telegram) poolInbox() {
 			if err != nil {
 				log.Error("parsing updates response failed", zap.Error(err))
 			}
-			msgPerUpdateRate.Inc(int64(nMsg))
+			msgPerUpdateCount.Inc(int64(nMsg))
 			if nMsg != maxMsgPerUpdates {
 				time.Sleep(poolDuration)
 			}
