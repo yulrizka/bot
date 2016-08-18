@@ -71,6 +71,9 @@ type TMessage struct {
 	Text            string    `json:"text"`
 	ParseMode       string    `json:"parse_mode,omitempty"`
 	MigrateToChatID *int64    `json:"migrate_to_chat_id,omitempty"`
+	ReplyTo         *TMessage `json:"reply_to_message,omitempty"`
+	NewChatMember   TUser     `json:"new_chat_member,omitempty"`
+	LeftChatMember  TUser     `json:"left_chat_member,omitempty"`
 	ReceivedAt      time.Time `json:"-"`
 }
 
@@ -94,6 +97,12 @@ type TChat struct {
 	Type  string `json:"type"`
 	Title string `json:"title"`
 	TUser
+}
+
+// TChatMember represent user membership of a group
+type TChatMember struct {
+	User   TUser `json:"user"`
+	Status string
 }
 
 // TChatTypeMap maps betwwen string to bot.ChatType
@@ -361,7 +370,6 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 
 func (t *Telegram) Leave(chanID string) error {
 	url := fmt.Sprintf("%s/leaveChat?chat_id=%s", t.url, url.QueryEscape(chanID))
-	fmt.Printf("url = %+v\n", url)
 	resp, err := http.Get(url)
 	if err != nil {
 		log.Error("leave failed", zap.Error(err))
@@ -371,6 +379,63 @@ func (t *Telegram) Leave(chanID string) error {
 
 	if _, err := parseResponse(resp); err != nil {
 		log.Error("leave invalid response", zap.Error(err))
+		return err
+	}
+
+	return nil
+}
+
+func (t *Telegram) Member(chanID, userID string) (*TChatMember, error) {
+	url := fmt.Sprintf("%s/getChatmember?chat_id=%s&user_id=%s", t.url, url.QueryEscape(chanID), url.QueryEscape(userID))
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Error("get member failed", zap.Error(err))
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	tresp, err := parseResponse(resp)
+	if err != nil {
+		log.Error("get member invalid response", zap.Error(err))
+		return nil, err
+	}
+
+	var member TChatMember
+	if err := json.Unmarshal(tresp.Result, &member); err != nil {
+		return nil, err
+	}
+
+	return &member, nil
+}
+
+func (t *Telegram) Kick(chanID, userID string) error {
+	url := fmt.Sprintf("%s/kickChatMember?chat_id=%s&user_id=%s", t.url, url.QueryEscape(chanID), url.QueryEscape(userID))
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Error("kick failed", zap.Error(err))
+		return err
+	}
+	defer resp.Body.Close()
+
+	if _, err := parseResponse(resp); err != nil {
+		log.Error("kick invalid response", zap.Error(err))
+		return err
+	}
+
+	return nil
+}
+
+func (t *Telegram) Unban(chanID, userID string) error {
+	url := fmt.Sprintf("%s/unbanChatMember?chat_id=%s&user_id=%s", t.url, url.QueryEscape(chanID), url.QueryEscape(userID))
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Error("kick failed", zap.Error(err))
+		return err
+	}
+	defer resp.Body.Close()
+
+	if _, err := parseResponse(resp); err != nil {
+		log.Error("kick invalid response", zap.Error(err))
 		return err
 	}
 
