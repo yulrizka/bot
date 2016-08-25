@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -8,24 +9,33 @@ import (
 
 // Message represents chat message
 type Message struct {
-	ID             string
-	From           User
-	Date           time.Time
-	Chat           Chat
-	Text           string
-	Format         MessageFormat
-	ReplyMessageID string
-	ReceivedAt     time.Time
-	Raw            json.RawMessage `json:"-"`
-	Retry          int             `json:"-"`
-	DiscardAfter   time.Time       `json:"-"`
+	ID           string
+	From         User
+	Date         time.Time
+	Chat         Chat
+	Text         string
+	Format       MessageFormat
+	ReplyTo      *Message
+	ReplyToID    string
+	ReceivedAt   time.Time
+	Raw          json.RawMessage `json:"-"`
+	Retry        int             `json:"-"`
+	DiscardAfter time.Time       `json:"-"`
+}
+
+type JoinMessage struct {
+	*Message
+}
+
+type LeftMessage struct {
+	*Message
 }
 
 type ChannelMigratedMessage struct {
-	Message
 	FromID     string
 	ToID       string
 	ReceivedAt time.Time
+	Raw        json.RawMessage `json:"-"`
 }
 
 // MessageFormat represents formatting of the message
@@ -71,6 +81,18 @@ type Chat struct {
 	Type     ChatType
 	Title    string
 	Username string
+}
+
+func (t Chat) Name() string {
+	var buf bytes.Buffer
+	buf.WriteString(t.Title)
+	if t.Username != "" {
+		buf.WriteString(" (@")
+		buf.WriteString(t.Username)
+		buf.WriteString(")")
+	}
+
+	return buf.String()
 }
 
 // Plugin is pluggable module to process messages
