@@ -18,11 +18,13 @@ import (
 
 // Options
 var (
-	OutboxBufferSize = 200
+	// OutboxBufferSize is the size of the outbox channel
+	OutboxBufferSize = 100
+	// OutboxWorker is the number of worker that sends message to telegram api
+	OutboxWorker     = 5
 	poolDuration     = 1 * time.Second
 	log              zap.Logger
 	maxMsgPerUpdates = 100
-	OutboxWorker     = 5
 
 	// stats
 	msgPerUpdateCount   = metrics.NewRegisteredCounter("telegram.messagePerUpdate", metrics.DefaultRegistry)
@@ -34,7 +36,7 @@ var (
 	msgDiscardedCount   = metrics.NewRegisteredCounter("telegram.sendMessage.discarded", metrics.DefaultRegistry)
 	msgDroppedCount     = metrics.NewRegisteredCounter("telegram.sendMessage.dropped", metrics.DefaultRegistry)
 
-	// compile time info
+	// VERSION compile time info
 	VERSION = ""
 )
 
@@ -42,6 +44,7 @@ func init() {
 	log = zap.New(zap.NewJSONEncoder(), zap.AddCaller(), zap.AddStacks(zap.FatalLevel))
 }
 
+// SetLogger replace the logger object
 func SetLogger(l zap.Logger) {
 	log = l.With(zap.String("module", "bot"))
 }
@@ -57,6 +60,7 @@ type TResponse struct {
 	TError
 }
 
+// TError error response structure
 type TError struct {
 	ErrorCode   int64  `json:"error_code,omitempty"`
 	Description string `json:"description"`
@@ -88,6 +92,7 @@ type TMessage struct {
 	Raw             json.RawMessage `json:"-"`
 }
 
+// ToMessage converts TMessage to *bot.Message
 func (m *TMessage) ToMessage() *Message {
 	message := Message{
 		ID:   strconv.FormatInt(m.MessageID, 10),
@@ -111,6 +116,7 @@ func (m *TMessage) ToMessage() *Message {
 	return &message
 }
 
+// ToMigratedMessage converts Telegram Message to bot.ChannelMigratedMessage
 func (m *TMessage) ToMigratedMessage() ChannelMigratedMessage {
 	fromID := strconv.FormatInt(m.Chat.ID, 10)
 	toID := strconv.FormatInt(*(m.MigrateToChatID), 10)
@@ -139,6 +145,7 @@ type TUser struct {
 	Username  string `json:"username"`
 }
 
+// ToUser converts to bot.User
 func (u TUser) ToUser() User {
 	return User{
 		ID:        strconv.FormatInt(u.ID, 10),
@@ -171,7 +178,7 @@ var TChatTypeMap = map[string]ChatType{
 
 // Telegram API
 type Telegram struct {
-	Name       string
+	username   string
 	url        string
 	input      map[Plugin]chan interface{}
 	output     chan Message
@@ -180,7 +187,7 @@ type Telegram struct {
 }
 
 // NewTelegram creates telegram API Client
-func NewTelegram(key string) *Telegram {
+func NewTelegram(key string) (*Telegram, error) {
 	if key == "" {
 		log.Fatal("telegram API key must not be empty")
 	}
@@ -191,7 +198,23 @@ func NewTelegram(key string) *Telegram {
 		quit:   make(chan struct{}),
 	}
 
-	return &t
+	tresp, err := t.do("getMe")
+	if err != nil {
+		return nil, err
+	}
+
+	var user TUser
+	if err := json.Unmarshal(tresp.Result, &user); err != nil {
+		return nil, err
+	}
+	t.username = user.Username
+
+	return &t, nil
+}
+
+// Username returns bot's username
+func (t *Telegram) Username() string {
+	return t.username
 }
 
 //AddPlugin add processing module to telegram
@@ -418,8 +441,9 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 	return len(results), nil
 }
 
-func (t *Telegram) Chat(chanID string) (*TChat, error) {
-	url := fmt.Sprintf("getChat?chat_id=%s", url.QueryEscape(chanID))
+// Chat gets chat information based on chatID
+func (t *Telegram) Chat(id string) (*TChat, error) {
+	url := fmt.Sprintf("getChat?chat_id=%s", url.QueryEscape(id))
 	resp, err := t.do(url)
 	if err != nil {
 		return nil, err
@@ -433,15 +457,17 @@ func (t *Telegram) Chat(chanID string) (*TChat, error) {
 	return &chat, nil
 }
 
-func (t *Telegram) Leave(chanID string) error {
-	url := fmt.Sprintf("leaveChat?chat_id=%s", url.QueryEscape(chanID))
+// Leave a chat
+func (t *Telegram) Leave(chatID string) error {
+	url := fmt.Sprintf("leaveChat?chat_id=%s", url.QueryEscape(chatID))
 	_, err := t.do(url)
 
 	return err
 }
 
-func (t *Telegram) Member(chanID, userID string) (*TChatMember, error) {
-	url := fmt.Sprintf("getChatmember?chat_id=%s&user_id=%s", url.QueryEscape(chanID), url.QueryEscape(userID))
+// Member check if userID is member of chatID
+func (t *Telegram) Member(chatID, userID string) (*TChatMember, error) {
+	url := fmt.Sprintf("getChatmember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
 	resp, err := t.do(url)
 	if err != nil {
 		return nil, err
@@ -455,8 +481,9 @@ func (t *Telegram) Member(chanID, userID string) (*TChatMember, error) {
 	return &member, nil
 }
 
-func (t *Telegram) MembersCount(chanID string) (int, error) {
-	url := fmt.Sprintf("getChatMembersCount?chat_id=%s", url.QueryEscape(chanID))
+// MembersCount gets the counts of member for a chat id
+func (t *Telegram) MembersCount(chatID string) (int, error) {
+	url := fmt.Sprintf("getChatMembersCount?chat_id=%s", url.QueryEscape(chatID))
 	resp, err := t.do(url)
 	if err != nil {
 		return 0, err
@@ -468,14 +495,16 @@ func (t *Telegram) MembersCount(chanID string) (int, error) {
 	return n, err
 }
 
-func (t *Telegram) Kick(chanID, userID string) error {
-	url := fmt.Sprintf("kickChatMember?chat_id=%s&user_id=%s", url.QueryEscape(chanID), url.QueryEscape(userID))
+// Kick userID from chatID
+func (t *Telegram) Kick(chatID, userID string) error {
+	url := fmt.Sprintf("kickChatMember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
 	_, err := t.do(url)
 	return err
 }
 
-func (t *Telegram) Unban(chanID, userID string) error {
-	url := fmt.Sprintf("unbanChatMember?chat_id=%s&user_id=%s", url.QueryEscape(chanID), url.QueryEscape(userID))
+// Unban userID from chatID
+func (t *Telegram) Unban(chatID, userID string) error {
+	url := fmt.Sprintf("unbanChatMember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
 	_, err := t.do(url)
 	return err
 }
@@ -503,6 +532,7 @@ func parseResponse(resp *http.Response) (*TResponse, error) {
 	return &tresp, nil
 }
 
+//TelegramEscape escapes html that is acceptable by telegram
 func TelegramEscape(s string) string {
 	s = strings.Replace(s, "&", "&amp;", -1)
 	s = strings.Replace(s, "<", "&lt;", -1)
