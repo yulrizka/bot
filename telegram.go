@@ -15,6 +15,7 @@ import (
 	"github.com/uber-go/zap"
 )
 
+// Options
 var (
 	OutboxBufferSize = 200
 	poolDuration     = 1 * time.Second
@@ -37,7 +38,7 @@ var (
 )
 
 func init() {
-	log = zap.NewJSON(zap.AddCaller(), zap.AddStacks(zap.FatalLevel))
+	log = zap.New(zap.NewJSONEncoder(), zap.AddCaller(), zap.AddStacks(zap.FatalLevel))
 }
 
 func SetLogger(l zap.Logger) {
