@@ -236,7 +236,7 @@ func (t *Telegram) Start() {
 }
 
 func (t *Telegram) poolOutbox() {
-	// fork incomming message, group by msg.Chat.ID to the workers
+	// fork incoming message, group by msg.Chat.ID to the workers
 	inChs := make([]chan Message, OutboxWorker)
 	for i := 0; i < OutboxWorker; i++ {
 		inChs[i] = make(chan Message)

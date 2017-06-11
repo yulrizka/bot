@@ -10,7 +10,7 @@ import (
 // Client represent a chat client. Currently supports telegram
 type Client interface {
 	AddPlugin(Plugin) error
-	Start()
+	Start() error
 	Username() string // bot username
 }
 
@@ -79,10 +79,11 @@ type ChatType string
 
 // Available ChatType
 const (
-	Private    ChatType = "private"
-	Group      ChatType = "group"
-	SuperGroup ChatType = "supergroup"
 	Channel    ChatType = "channel"
+	Group      ChatType = "group"
+	Private    ChatType = "private"
+	SuperGroup ChatType = "supergroup"
+	Thread     ChatType = "thread"
 )
 
 // Chat represents a chat session

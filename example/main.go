@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -32,13 +33,14 @@ func (m *marcoPolo) Init(out chan bot.Message) (in chan interface{}, err error) 
 
 func (m *marcoPolo) process() {
 	for rawMsg := range m.in {
-		if message, ok := rawMsg.(*bot.Message); ok {
-			if strings.TrimSpace(strings.ToLower(message.Text)) == "marco" {
-				text := fmt.Sprintf("POLO! -> %s (@%s)\n", message.From.FullName(), message.From.Username)
-				m.out <- bot.Message{
-					Chat: message.Chat,
+		if inMessage, ok := rawMsg.(*bot.Message); ok {
+			if strings.TrimSpace(strings.ToLower(inMessage.Text)) == "marco" {
+				text := fmt.Sprintf("POLO! -> %s (<@%s>)\n", inMessage.From.FullName(), inMessage.From.Username)
+				msg := bot.Message{
+					Chat: inMessage.Chat,
 					Text: text,
 				}
+				m.out <- msg
 			}
 		}
 	}
@@ -47,15 +49,18 @@ func (m *marcoPolo) process() {
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
 
-	key := os.Getenv("TELEGRAM_KEY")
+	key := os.Getenv("SLACK_KEY")
 	if key == "" {
 		panic("TELEGRAM_KEY can not be empty")
 	}
-	telegram := bot.NewTelegram(key)
+	slack, err := bot.NewSlack(context.Background(), key)
+	if err != nil {
+		log.Fatal(err)
+	}
 	plugin := marcoPolo{}
-	if err := telegram.AddPlugin(&plugin); err != nil {
+	if err := slack.AddPlugin(&plugin); err != nil {
 		panic(err)
 	}
 
-	telegram.Start()
+	slack.Start()
 }
