@@ -12,7 +12,6 @@ import (
 
 // marcoPolo is an example plugin that will reply text marco with polo
 type marcoPolo struct {
-	in  chan interface{}
 	out chan bot.Message
 }
 
@@ -24,26 +23,26 @@ func (*marcoPolo) Name() string {
 // input channel which is an inbox for new channel.
 // The reason 'in' is a return value so that plugin can specify the size
 // of the channel
-func (m *marcoPolo) Init(out chan bot.Message) (in chan interface{}, err error) {
-	m.in = make(chan interface{}, 100)
+func (m *marcoPolo) Init(out chan bot.Message) error {
 	m.out = out
-	go m.process()
-	return m.in, nil
+	return nil
 }
 
-func (m *marcoPolo) process() {
-	for rawMsg := range m.in {
-		if inMessage, ok := rawMsg.(*bot.Message); ok {
-			if strings.TrimSpace(strings.ToLower(inMessage.Text)) == "marco" {
-				text := fmt.Sprintf("POLO! -> %s (<@%s>)\n", inMessage.From.FullName(), inMessage.From.Username)
-				msg := bot.Message{
-					Chat: inMessage.Chat,
-					Text: text,
-				}
-				m.out <- msg
+// Handle incoming message that could be in any type (*bot.Message, *bot.JoinMessage, etc).
+// return handled false will pass modifiedMsg to other plugins down the chain
+func (m *marcoPolo) Handle(inMsg interface{}) (handled bool, modifiedMsg interface{}) {
+	if inMessage, ok := inMsg.(*bot.Message); ok {
+		if strings.TrimSpace(strings.ToLower(inMessage.Text)) == "marco" {
+			text := fmt.Sprintf("POLO! -> %s (<@%s>)\n", inMessage.From.FullName(), inMessage.From.Username)
+			// send message
+			msg := bot.Message{
+				Chat: inMessage.Chat,
+				Text: text,
 			}
+			m.out <- msg
 		}
 	}
+	return true, inMsg
 }
 
 func main() {
@@ -58,7 +57,7 @@ func main() {
 		log.Fatal(err)
 	}
 	plugin := marcoPolo{}
-	if err := slack.AddPlugin(&plugin); err != nil {
+	if err := slack.AddPlugins(&plugin); err != nil {
 		panic(err)
 	}
 

@@ -17,10 +17,12 @@ import (
 const slackURL = "https://slack.com/api"
 
 type Slack struct {
-	ctx    context.Context
-	token  string
-	input  map[Plugin]chan interface{}
-	output chan Message
+	ctx     context.Context
+	quit    context.CancelFunc
+	token   string
+	input   map[Plugin]chan interface{}
+	output  chan Message
+	handler func(interface{}) (handled bool, msg interface{})
 
 	url             string
 	teamID          string
@@ -96,79 +98,48 @@ type slackResponse struct {
 }
 
 func NewSlack(ctx context.Context, token string) (*Slack, error) {
-	data := url.Values{}
-	data.Set("token", token)
-
-	resp, err := http.Post(slackURL+"/rtm.connect", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, fmt.Errorf("faile to create connect request: %s", err)
-	}
-	defer resp.Body.Close()
-
-	var sResp struct {
-		slackResponse
-		URL  string
-		Team struct {
-			ID             string
-			Name           string
-			Domain         string
-			EnterpriseID   string
-			EnterpriseName string
-		}
-		Self struct {
-			ID   string
-			Name string
-		}
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %s", err)
-
-	}
-	if !sResp.Ok {
-		return nil, fmt.Errorf("failed to connect error:%s warning:%s", sResp.Error, sResp.Warning)
-	}
-
-	members, err := userList(token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get list of user: %s", err)
-	}
-
-	ims, err := imList(token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get list of user: %s", err)
-	}
+	ctx, quit := context.WithCancel(ctx)
 	return &Slack{
 		ctx:    ctx,
+		quit:   quit,
 		token:  token,
 		input:  make(map[Plugin]chan interface{}),
 		output: make(chan Message, OutboxBufferSize),
-
-		url:             sResp.URL,
-		teamID:          sResp.Team.ID,
-		teamName:        sResp.Team.Name,
-		domain:          sResp.Team.Domain,
-		enterprise_id:   sResp.Team.EnterpriseID,
-		enterprise_name: sResp.Team.EnterpriseName,
-		id:              sResp.Self.ID,
-		name:            sResp.Self.Name,
-
-		members: members,
-		ims:     ims,
+		handler: func(inMsg interface{}) (handled bool, msg interface{}) {
+			return true, inMsg
+		},
 	}, nil
 }
 
-func (s *Slack) AddPlugin(p Plugin) error {
-	input, err := p.Init(s.output)
-	if err != nil {
-		return err
+func (s *Slack) AddPlugins(plugins ...Plugin) error {
+	if len(plugins) == 0 {
+		return nil
 	}
-	s.input[p] = input
+	for i := len(plugins) - 1; i >= 0; i-- {
+		p := plugins[i]
+		err := p.Init(s.output)
+		if err != nil {
+			return err
+		}
+
+		// add middle ware
+		next := s.handler
+		s.handler = func(inMsg interface{}) (handled bool, msg interface{}) {
+			ok, msg := p.Handle(inMsg)
+			if ok {
+				return true, msg
+			}
+			return next(msg)
+		}
+	}
 
 	return nil
 }
 
 func (s *Slack) Start() error {
+	if err := s.init(); err != nil {
+		return fmt.Errorf("failed to initialize connection: %s", err)
+	}
 	conn, _, err := websocket.DefaultDialer.Dial(s.url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to websocket: %s", err)
@@ -194,13 +165,7 @@ func (s *Slack) Start() error {
 				if msg == nil {
 					continue
 				}
-				for plugin, ch := range s.input {
-					select {
-					case ch <- msg:
-					default:
-						log.Warn("input channel full, skipping message", zap.String("plugin", plugin.Name()))
-					}
-				}
+				s.handler(msg)
 			}
 		}
 	}()
@@ -256,6 +221,63 @@ func (s *Slack) Start() error {
 	return nil
 }
 
+func (s *Slack) init() error {
+	data := url.Values{}
+	data.Set("token", s.token)
+
+	resp, err := http.Post(slackURL+"/rtm.connect", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return fmt.Errorf("faile to create connect request: %s", err)
+	}
+	defer resp.Body.Close()
+
+	var sResp struct {
+		slackResponse
+		URL  string
+		Team struct {
+			ID             string
+			Name           string
+			Domain         string
+			EnterpriseID   string
+			EnterpriseName string
+		}
+		Self struct {
+			ID   string
+			Name string
+		}
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
+		return fmt.Errorf("failed to parse response: %s", err)
+
+	}
+	if !sResp.Ok {
+		return fmt.Errorf("failed to connect error:%s warning:%s", sResp.Error, sResp.Warning)
+	}
+	s.url = sResp.URL
+	s.teamID = sResp.Team.ID
+	s.teamName = sResp.Team.Name
+	s.domain = sResp.Team.Domain
+	s.enterprise_id = sResp.Team.EnterpriseID
+	s.enterprise_name = sResp.Team.EnterpriseName
+	s.id = sResp.Self.ID
+	s.name = sResp.Self.Name
+
+	members, err := userList(s.token)
+	if err != nil {
+		return fmt.Errorf("failed to get list of user: %s", err)
+	}
+	s.members = members
+
+	ims, err := imList(s.token)
+	if err != nil {
+		return fmt.Errorf("failed to get list of user: %s", err)
+	}
+	s.ims = ims
+
+	return nil
+}
+
 func (s *Slack) parseIncomingMessage(msg []byte) (*Message, error) {
 	var raw struct {
 		Type    string
@@ -303,6 +325,10 @@ func (s *Slack) parseIncomingMessage(msg []byte) (*Message, error) {
 		return &msg, nil
 	}
 	return nil, nil
+}
+
+func (s *Slack) Stop() {
+	s.quit()
 }
 
 func (s *Slack) UserName() string {
@@ -363,7 +389,6 @@ func userList(token string) (map[string]SlackUser, error) {
 		slackResponse
 		Members []SlackUser
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %s", err)
 

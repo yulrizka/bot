@@ -220,12 +220,9 @@ func (t *Telegram) Username() string {
 
 //AddPlugin add processing module to telegram
 func (t *Telegram) AddPlugin(p Plugin) error {
-	input, err := p.Init(t.output)
-	if err != nil {
+	if err := p.Init(t.output); err != nil {
 		return err
 	}
-	t.input[p] = input
-
 	return nil
 }
 

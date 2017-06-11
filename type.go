@@ -2,6 +2,7 @@ package bot
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -9,13 +10,16 @@ import (
 
 // Client represent a chat client. Currently supports telegram
 type Client interface {
-	AddPlugin(Plugin) error
+	AddPlugins(...Plugin) error
 	Start() error
+	Stop()
+
 	Username() string // bot username
 }
 
 // Message represents chat message
 type Message struct {
+	ctx          context.Context
 	ID           string
 	From         User
 	Date         time.Time
@@ -28,6 +32,23 @@ type Message struct {
 	Raw          json.RawMessage `json:"-"`
 	Retry        int             `json:"-"`
 	DiscardAfter time.Time       `json:"-"`
+}
+
+func (m *Message) Context() context.Context {
+	if m.ctx != nil {
+		return m.ctx
+	}
+	return context.Background()
+}
+
+func (m *Message) WithContext(ctx context.Context) *Message {
+	if ctx == nil {
+		panic("nil context")
+	}
+	m2 := new(Message)
+	m2 = m
+	m2.ctx = ctx
+	return m2
 }
 
 // JoinMessage represents information that a user join a chat
@@ -66,7 +87,7 @@ type User struct {
 	Username  string
 }
 
-// FullName returns Firstname + LastName
+// FullName returns first name + last name
 func (u User) FullName() string {
 	if u.LastName != "" {
 		return fmt.Sprintf("%s %s", u.FirstName, u.LastName)
@@ -110,5 +131,6 @@ func (t Chat) Name() string {
 // Plugin is pluggable module to process messages
 type Plugin interface {
 	Name() string
-	Init(out chan Message) (chan interface{}, error)
+	Init(out chan Message) error
+	Handle(in interface{}) (handled bool, msg interface{})
 }
