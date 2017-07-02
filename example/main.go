@@ -30,8 +30,8 @@ func (m *marcoPolo) Init(out chan bot.Message) error {
 
 // Handle incoming message that could be in any type (*bot.Message, *bot.JoinMessage, etc).
 // return handled false will pass modifiedMsg to other plugins down the chain
-func (m *marcoPolo) Handle(inMsg interface{}) (handled bool, modifiedMsg interface{}) {
-	if inMessage, ok := inMsg.(*bot.Message); ok {
+func (m *marcoPolo) Handle(rawMsg interface{}) (handled bool, modifiedMsg interface{}) {
+	if inMessage, ok := rawMsg.(*bot.Message); ok {
 		if strings.TrimSpace(strings.ToLower(inMessage.Text)) == "marco" {
 			text := fmt.Sprintf("POLO! -> %s (<@%s>)\n", inMessage.From.FullName(), inMessage.From.Username)
 			// send message
@@ -42,7 +42,10 @@ func (m *marcoPolo) Handle(inMsg interface{}) (handled bool, modifiedMsg interfa
 			m.out <- msg
 		}
 	}
-	return true, inMsg
+	// here we have the chance to modify message and pass it a long to other plugins down the line
+	// setting handled to true will stop the processing.
+	handled, modifiedMsg = false, rawMsg
+	return
 }
 
 func main() {
@@ -50,16 +53,19 @@ func main() {
 
 	key := os.Getenv("SLACK_KEY")
 	if key == "" {
-		panic("TELEGRAM_KEY can not be empty")
+		panic("SLACK_KEY can not be empty")
 	}
-	slack, err := bot.NewSlack(context.Background(), key)
+	var client bot.Client
+	var err error
+
+	client, err = bot.NewSlack(context.Background(), key)
 	if err != nil {
 		log.Fatal(err)
 	}
 	plugin := marcoPolo{}
-	if err := slack.AddPlugins(&plugin); err != nil {
+	if err := client.AddPlugins(&plugin); err != nil {
 		panic(err)
 	}
 
-	slack.Start()
+	client.Start()
 }

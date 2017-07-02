@@ -1,7 +1,6 @@
 package bot
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,7 +13,18 @@ type Client interface {
 	Start() error
 	Stop()
 
-	Username() string // bot username
+	UserName() string // bot username
+	Mentioned(field string) bool
+	Mention(User) string
+	FindUser(UserName string) (User, bool)
+}
+
+type Attachment struct {
+	Fallback string `json:"fallback"`
+	Text     string `json:"text"`
+	Pretext  string `json:"pretext"`
+	Title    string `json:"title"`
+	ID       int64  `json:"id"`
 }
 
 // Message represents chat message
@@ -29,6 +39,7 @@ type Message struct {
 	ReplyTo      *Message
 	ReplyToID    string
 	ReceivedAt   time.Time
+	Attachments  []Attachment
 	Raw          json.RawMessage `json:"-"`
 	Retry        int             `json:"-"`
 	DiscardAfter time.Time       `json:"-"`
@@ -115,22 +126,14 @@ type Chat struct {
 	Username string
 }
 
-// Name returns the title of the chat
+// Name returns the title of the bot
 func (t Chat) Name() string {
-	var buf bytes.Buffer
-	buf.WriteString(t.Title)
-	if t.Username != "" {
-		buf.WriteString(" (@")
-		buf.WriteString(t.Username)
-		buf.WriteString(")")
-	}
-
-	return buf.String()
+	return fmt.Sprintf(" (@%s)", t.Username)
 }
 
 // Plugin is pluggable module to process messages
 type Plugin interface {
 	Name() string
-	Init(out chan Message) error
+	Init(out chan Message, cl Client) error
 	Handle(in interface{}) (handled bool, msg interface{})
 }

@@ -3,6 +3,9 @@ package bot
 import (
 	"context"
 	"testing"
+	"time"
+
+	"reflect"
 )
 
 type mockPlugin struct {
@@ -17,7 +20,7 @@ func (m mockPlugin) Name() string {
 	}
 	return m.NameFn()
 }
-func (m mockPlugin) Init(out chan Message) error {
+func (m mockPlugin) Init(out chan Message, cli Client) error {
 	if m.InitFn == nil {
 		panic("not implemented")
 	}
@@ -123,5 +126,54 @@ func TestSlack_AddPlugin(t *testing.T) {
 			t.Errorf("got handled %s want %s", got, want)
 		}
 	})
+
+}
+
+func TestParseIncomingMessage(t *testing.T) {
+	golden := []struct {
+		name    string
+		raw     string
+		want    *Message
+		wantErr bool
+	}{
+		{
+			name:    "with attachement",
+			raw:     `{"text":"","username":"gerrit","bot_id":"B06P5RMNH","attachments":[{"fallback":"Patch Set 1:\n\n(1 comment)","text":"Patch Set 1:\n\n(1 comment)","pretext":"[icas] New comment on change <https://gerrit.ecg.so/58629|58629>","title":"Comment by Daniela Remenska (<mailto:dremenska@ebay.com|dremenska@ebay.com>)","id":1,"mrkdwn_in":["text","pretext"]}],"type":"message","subtype":"bot_message","team":"T03L14Q4E","channel":"G04EC7B6V","event_ts":"1497280551.238075","ts":"1497280551.238075"}`,
+			wantErr: false,
+			want: &Message{
+				ID: "1497280551.238075",
+				From: User{
+					Username: "gerrit",
+				},
+				Date: time.Unix(1497280551, 0),
+				Chat: Chat{
+					ID:   "G04EC7B6V",
+					Type: Group,
+				},
+				Attachments: []Attachment{
+					{
+						Fallback: "Patch Set 1:\n\n(1 comment)",
+						Text:     "Patch Set 1:\n\n(1 comment)",
+						Pretext:  "[icas] New comment on change <https://gerrit.ecg.so/58629|58629>",
+						Title:    "Comment by Daniela Remenska (<mailto:dremenska@ebay.com|dremenska@ebay.com>)",
+						ID:       1,
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range golden {
+		t.Run(tt.name, func(t *testing.T) {
+			s := Slack{}
+			got, err := s.parseIncomingMessage([]byte(tt.raw))
+			if (err != nil && !tt.wantErr) || (err == nil && tt.wantErr) {
+				t.Errorf("got error %s, want error %t ", err, tt.wantErr)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %+v want %+v", got, tt.want)
+			}
+		})
+	}
 
 }

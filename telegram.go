@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"context"
+
 	"github.com/pkg/errors"
 	"github.com/rcrowley/go-metrics"
 	"github.com/uber-go/zap"
@@ -179,24 +181,30 @@ var TChatTypeMap = map[string]ChatType{
 
 // Telegram API
 type Telegram struct {
-	username   string
-	url        string
-	input      map[Plugin]chan interface{}
-	output     chan Message
-	quit       chan struct{}
+	ctx      context.Context
+	quit     context.CancelFunc
+	username string
+	url      string
+	output   chan Message
+
 	lastUpdate int64
+	handler    func(interface{}) (handled bool, msg interface{})
 }
 
 // NewTelegram creates telegram API Client
-func NewTelegram(key string) (*Telegram, error) {
+func NewTelegram(ctx context.Context, key string) (*Telegram, error) {
 	if key == "" {
 		log.Fatal("telegram API key must not be empty")
 	}
+	ctx, quit := context.WithCancel(ctx)
 	t := Telegram{
+		ctx:    ctx,
+		quit:   quit,
 		url:    fmt.Sprintf("https://api.telegram.org/bot%s", key),
-		input:  make(map[Plugin]chan interface{}),
 		output: make(chan Message, OutboxBufferSize),
-		quit:   make(chan struct{}),
+		handler: func(inMsg interface{}) (handled bool, msg interface{}) {
+			return true, inMsg
+		},
 	}
 
 	tresp, err := t.do("getMe")
@@ -214,22 +222,47 @@ func NewTelegram(key string) (*Telegram, error) {
 }
 
 // Username returns bot's username
-func (t *Telegram) Username() string {
+func (t *Telegram) UserName() string {
 	return t.username
 }
 
 //AddPlugin add processing module to telegram
-func (t *Telegram) AddPlugin(p Plugin) error {
-	if err := p.Init(t.output); err != nil {
-		return err
+func (t *Telegram) AddPlugins(plugins ...Plugin) error {
+	if len(plugins) == 0 {
+		return nil
 	}
+	for i := len(plugins) - 1; i >= 0; i-- {
+		p := plugins[i]
+		err := p.Init(t.output, t)
+		if err != nil {
+			return err
+		}
+
+		// add middle ware
+		next := t.handler
+		t.handler = func(inMsg interface{}) (handled bool, msg interface{}) {
+			ok, msg := p.Handle(inMsg)
+			if ok {
+				return true, msg
+			}
+			return next(msg)
+		}
+	}
+
 	return nil
 }
 
 // Start consuming from telegram
-func (t *Telegram) Start() {
+func (t *Telegram) Start() error {
 	t.poolOutbox()
 	t.poolInbox()
+	<-t.ctx.Done()
+
+	return nil
+}
+
+func (t *Telegram) Stop() {
+	t.quit()
 }
 
 func (t *Telegram) poolOutbox() {
@@ -353,7 +386,7 @@ func (t *Telegram) poolOutbox() {
 					if err != nil {
 						log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", jsonMsg), zap.Int("worker", i))
 					}
-				case <-t.quit:
+				case <-t.ctx.Done():
 					return
 				}
 			}
@@ -364,7 +397,7 @@ func (t *Telegram) poolOutbox() {
 func (t *Telegram) poolInbox() {
 	for {
 		select {
-		case <-t.quit:
+		case <-t.ctx.Done():
 			return
 		default:
 			started := time.Now()
@@ -427,13 +460,8 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 		}
 
 		log.Debug("update", zap.Object("msg", msg))
-		for plugin, ch := range t.input {
-			select {
-			case ch <- msg:
-			default:
-				log.Warn("input channel full, skipping message", zap.String("plugin", plugin.Name()), zap.Int64("msgID", m.MessageID))
-			}
-		}
+		t.handler(msg)
+
 	}
 
 	return len(results), nil
@@ -516,6 +544,18 @@ func (t *Telegram) do(urlPath string) (*TResponse, error) {
 	defer resp.Body.Close()
 
 	return parseResponse(resp)
+}
+
+func (t *Telegram) Mentioned(field string) bool {
+	panic("TODO not implemented")
+}
+
+func (t *Telegram) Mention(u User) string {
+	panic("TODO not implemented")
+}
+
+func (t *Telegram) FindUser(username string) (User, bool) {
+	panic("TODO not implemented")
 }
 
 func parseResponse(resp *http.Response) (*TResponse, error) {
