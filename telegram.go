@@ -17,6 +17,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rcrowley/go-metrics"
 	"github.com/uber-go/zap"
+	"io"
 )
 
 // Options
@@ -467,6 +468,19 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 	return len(results), nil
 }
 
+func (t *Telegram) ChatInfo(chatID string) (ChatInfo, error) {
+	ci := ChatInfo{}
+	tchat, err := t.Chat(chatID)
+	if err != nil {
+		return ci, err
+	}
+
+	ci.ID = strconv.FormatInt(tchat.ID, 10)
+	ci.Type = Group
+	ci.Title = tchat.Title
+	return ci, nil
+}
+
 // Chat gets chat information based on chatID
 func (t *Telegram) Chat(id string) (*TChat, error) {
 	url := fmt.Sprintf("getChat?chat_id=%s", url.QueryEscape(id))
@@ -535,6 +549,10 @@ func (t *Telegram) Unban(chatID, userID string) error {
 	return err
 }
 
+func (t *Telegram) SetTopic(chatID string, topic string) error {
+	return fmt.Errorf("Telegram: Set topic is not implemented")
+}
+
 func (t *Telegram) do(urlPath string) (*TResponse, error) {
 	url := fmt.Sprintf("%s/%s", t.url, urlPath)
 	resp, err := http.Get(url)
@@ -568,6 +586,10 @@ func parseResponse(resp *http.Response) (*TResponse, error) {
 	}
 
 	return &tresp, nil
+}
+
+func (t *Telegram) UploadFile(chatID string, filename string, r io.Reader)  error {
+	panic("TODO not implemented")
 }
 
 //TelegramEscape escapes html that is acceptable by telegram

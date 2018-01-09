@@ -3,18 +3,35 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"bytes"
 	"github.com/gorilla/websocket"
 	"github.com/uber-go/zap"
+	"mime/multipart"
+	"net/http/httputil"
 )
 
 const slackURL = "https://slack.com/api"
+
+var (
+	ignoreMessageType = map[string]bool{
+		"channel_joined":  true,
+		"channel_created": true,
+		"channel_rename":  true,
+		"im_created":      true,
+		"team_join":       true,
+		"user_change":     true,
+	}
+)
 
 type Slack struct {
 	ctx    context.Context
@@ -122,6 +139,16 @@ type slackResponse struct {
 	Warning string
 }
 
+type slackError struct {
+	Message    string
+	ErrorMsg   string
+	WarningMsg string
+}
+
+func (ew slackError) Error() string {
+	return fmt.Sprintf("%s error:%q warning:%q", ew.Message, ew.ErrorMsg, ew.WarningMsg)
+}
+
 func NewSlack(ctx context.Context, token string) (*Slack, error) {
 	ctx, quit := context.WithCancel(ctx)
 	return &Slack{
@@ -190,11 +217,11 @@ func (s *Slack) Start() error {
 					log.Error("failed to parse message: ", zap.Error(err), zap.String("raw", string(raw)))
 					continue
 				}
-				// ignore message from our self
-				if msg.From.ID == s.id || msg.From.Username == s.name {
+				if msg == nil {
 					continue
 				}
-				if msg == nil {
+				// ignore message from our self
+				if msg.From.ID == s.id || msg.From.Username == s.name {
 					continue
 				}
 				s.handler(msg)
@@ -351,14 +378,23 @@ func (s *Slack) init() error {
 		s.ims = ims
 	}()
 
-	// since it's not used and quite some big response, skip it for now
-	enableFetchChannels := false
-	go func() {
-		var err error
-		defer func() {
-			errCh <- err
-		}()
+	errs := make([]string, 0, 2)
+	for i := 0; i < 2; i++ {
+		err := <-errCh
+		if err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	close(errCh)
+	if len(errs) > 0 {
+		return fmt.Errorf("init failuers: %s", strings.Join(errs, ";"))
+	}
 
+	log.Info("Initialize completed", zap.String("botname", s.name), zap.String("botID", s.id))
+
+	// since it's not used and quite some big response, skip it for now
+	enableFetchChannels := true
+	go func() {
 		if !enableFetchChannels {
 			return
 		}
@@ -366,7 +402,7 @@ func (s *Slack) init() error {
 		var channels map[string]slackChannel
 		channels, err = channelsList(s.token)
 		if err != nil {
-			err = fmt.Errorf("failed to get list of channels: %s", err)
+			log.Error("failed to get list of channels", zap.Error(err))
 			return
 		}
 		s.channels = channels
@@ -375,20 +411,6 @@ func (s *Slack) init() error {
 			s.nameToChannels[ch.Name] = ch
 		}
 	}()
-
-	errors := make([]string, 0, 3)
-	for i := 0; i < 3; i++ {
-		err := <-errCh
-		if err != nil {
-			errors = append(errors, err.Error())
-		}
-	}
-	close(errCh)
-	if len(errors) > 0 {
-		return fmt.Errorf("init failuers: %s", strings.Join(errors, ";"))
-	}
-
-	log.Info("Initialize completed", zap.String("botname", s.name), zap.String("botID", s.id))
 
 	return nil
 }
@@ -521,6 +543,19 @@ func (s *Slack) chatPostMessage(msg Message) error {
 
 func (s *Slack) parseIncomingMessage(rawMsg []byte) (*Message, error) {
 	log.Debug("incoming", zap.String("rawMsg", string(rawMsg)))
+
+	var rawType struct {
+		Type string
+	}
+	if err := json.Unmarshal(rawMsg, &rawType); err != nil {
+		return nil, fmt.Errorf("failed parsing message type: %s", err)
+	}
+
+	if ignoreMessageType[rawType.Type] {
+		// this type of message has specific structure, ignore for now
+		return nil, nil
+	}
+
 	var raw struct {
 		Type        string
 		Channel     string
@@ -593,7 +628,7 @@ func (s *Slack) UserName() string {
 
 func (s *Slack) imID(userIDorName string) (string, error) {
 	if userIDorName == "" {
-		return "", fmt.Errorf("empty username")
+		return "", errors.New("empty username")
 	}
 	var userID = userIDorName
 	if strings.HasPrefix(userIDorName, "@") {
@@ -681,5 +716,228 @@ func (s *Slack) EmulateReceiveMessage(raw []byte) error {
 		return nil
 	}
 	s.handler(msg)
+	return nil
+}
+
+func (s *Slack) SetTopic(chatID string, topic string) error {
+	err := s.channelSetTopic(chatID, topic)
+	if err != nil {
+		if slackErr, ok := err.(slackError); ok {
+			// it might be private group
+			if slackErr.ErrorMsg == "channel_not_found" {
+				err = s.groupSetTopic(chatID, topic)
+			}
+		}
+	}
+	return err
+}
+
+func (s *Slack) channelSetTopic(chatID string, topic string) error {
+	data := url.Values{}
+	data.Set("token", s.token)
+	data.Set("channel", chatID)
+	data.Set("topic", topic)
+	resp, err := http.Post(slackURL+"/channels.setTopic", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return fmt.Errorf("chat.setTopic request failed: %s", err)
+	}
+	defer resp.Body.Close()
+
+	var sResp struct {
+		slackResponse
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
+		return fmt.Errorf("failed to parse response: %s", err)
+	}
+	if !sResp.Ok {
+		return slackError{
+			Message:    "channels.setTopic failed",
+			ErrorMsg:   sResp.Error,
+			WarningMsg: sResp.Warning,
+		}
+	}
+
+	return nil
+}
+
+func (s *Slack) groupSetTopic(chatID string, topic string) error {
+	data := url.Values{}
+	data.Set("token", s.token)
+	data.Set("channel", chatID)
+	data.Set("topic", topic)
+	resp, err := http.Post(slackURL+"/groups.setTopic", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return fmt.Errorf("groups.setTopic request failed: %s", err)
+	}
+	defer resp.Body.Close()
+
+	var sResp struct {
+		slackResponse
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
+		return fmt.Errorf("failed to parse response: %s", err)
+	}
+	if !sResp.Ok {
+		return slackError{
+			Message:    "groups.setTopic failed",
+			ErrorMsg:   sResp.Error,
+			WarningMsg: sResp.Warning,
+		}
+
+	}
+
+	return nil
+}
+
+func (s *Slack) ChatInfo(chatID string) (ChatInfo, error) {
+	ci, err := s.channelInfo(chatID)
+	if err != nil {
+		if slackErr, ok := err.(slackError); ok {
+			// it might be private group
+			if slackErr.ErrorMsg == "channel_not_found" {
+				ci, err = s.groupInfo(chatID)
+			}
+		}
+	}
+	return ci, err
+}
+
+func (s *Slack) channelInfo(chatID string) (c ChatInfo, err error) {
+	data := url.Values{}
+	data.Set("token", s.token)
+	data.Set("channel", chatID)
+	resp, err := http.Post(slackURL+"/channels.info", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return c, fmt.Errorf("channel.info request failed: %s", err)
+	}
+	defer func() {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}()
+
+	var sResp struct {
+		slackResponse
+		slackChannel `json:"channel"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
+		return c, fmt.Errorf("failed to parse response: %s", err)
+	}
+	if !sResp.Ok {
+		return c, slackError{
+			Message:    "channels.info failed",
+			ErrorMsg:   sResp.Error,
+			WarningMsg: sResp.Warning,
+		}
+	}
+
+	c.ID = sResp.slackChannel.Id
+	c.Title = sResp.slackChannel.Name
+	c.Topic = sResp.slackChannel.Topic.Value
+	c.Description = sResp.slackChannel.Purpose.Value
+
+	return c, nil
+
+}
+
+func (s *Slack) groupInfo(chatID string) (c ChatInfo, err error) {
+	data := url.Values{}
+	data.Set("token", s.token)
+	data.Set("channel", chatID)
+	resp, err := http.Post(slackURL+"/groups.info", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return c, fmt.Errorf("chat.info request failed: %s", err)
+	}
+
+	defer func() {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}()
+
+	var sResp struct {
+		slackResponse
+		slackChannel `json:"group"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
+		return c, fmt.Errorf("failed to parse response: %s", err)
+	}
+	if !sResp.Ok {
+		return c, slackError{
+			Message:    "groups.info failed",
+			ErrorMsg:   sResp.Error,
+			WarningMsg: sResp.Warning,
+		}
+	}
+
+	c.ID = sResp.slackChannel.Id
+	c.Title = sResp.slackChannel.Name
+	c.Topic = sResp.slackChannel.Topic.Value
+	c.Description = sResp.slackChannel.Purpose.Value
+
+	return c, nil
+}
+
+func (s *Slack) UploadFile(chatID string, filename string, r io.Reader) error {
+
+	// write multipart filed
+	var b bytes.Buffer
+	var fw io.Writer
+	var err error
+	w := multipart.NewWriter(&b)
+
+
+	fw, err = w.CreateFormFile("file", filename)
+	if err != nil {
+		return fmt.Errorf("Failed to create multipart filed: %v", err)
+	}
+	if _, err := io.Copy(fw, r); err != nil {
+		return fmt.Errorf("Failed to read source file: %v", err)
+	}
+
+	// token
+	if fw, err = w.CreateFormField("token"); err != nil {
+		return fmt.Errorf("failed to add form field token", err)
+	}
+	if _, err = fw.Write([]byte(s.token)); err != nil {
+		return fmt.Errorf("failed to add form field token value", err)
+	}
+
+	// channels
+	if fw, err = w.CreateFormField("channels"); err != nil {
+		return fmt.Errorf("failed to add form field channels", err)
+	}
+	if _, err = fw.Write([]byte(chatID)); err != nil {
+		return fmt.Errorf("failed to add form field channels value", err)
+	}
+
+	// content
+	//if fw, err = w.CreateFormField("content"); err != nil {
+	//	return fmt.Errorf("failed to add form field channels", err)
+	//}
+	//if _, err = fw.Write([]byte("HELLO ahmy")); err != nil {
+	//	return fmt.Errorf("failed to add form field channels value", err)
+	//}
+	w.Close()
+
+	url := slackURL + "/files.upload"
+	//url := "https://hookb.in/ZB7g11VG"
+	req, err := http.NewRequest("POST", url, &b)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+
+
+	body, _ := httputil.DumpRequest(req, true)
+	fmt.Printf("body = %+v\n", string(body)) // for debugging
+
+	// curl -F file=@dramacat.gif -F channels=C024BE91L,#general -F token=xxxx-xxxxxxxxx-xxxx https://slack.com/api/files.upload
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("chat.info request failed: %s", err)
+	}
+
+	body, _ = httputil.DumpResponse(resp, true)
+	fmt.Printf("body = %+v\n", string(body)) // for debugging
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("Got response status: %d", resp.StatusCode)
+	}
+
 	return nil
 }

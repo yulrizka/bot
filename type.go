@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"io"
 )
 
 // Client represent a chat client. Currently supports telegram
@@ -17,6 +18,10 @@ type Client interface {
 	Mentioned(field string) bool
 	Mention(User) string
 	FindUser(UserName string) (User, bool)
+	ChatInfo(chatID string) (ChatInfo, error)
+	SetTopic(chatID, topic string) error
+
+	UploadFile(chatID string, filename string, r io.Reader)  error
 }
 
 type Attachment struct {
@@ -124,6 +129,14 @@ type Chat struct {
 	Type     ChatType
 	Title    string
 	Username string
+}
+
+type ChatInfo struct {
+	ID          string
+	Type        ChatType
+	Title       string
+	Topic       string
+	Description string
 }
 
 // Name returns the title of the bot
