@@ -169,6 +169,22 @@ func (s *Slack) AddPlugins(plugins ...Plugin) error {
 	for i := len(plugins) - 1; i >= 0; i-- {
 		p := plugins[i]
 		s.plugins = append(s.plugins, p)
+	}
+
+	return nil
+}
+
+func (s *Slack) Start() error {
+	if err := s.init(); err != nil {
+		return fmt.Errorf("failed to initialize connection: %s", err)
+	}
+
+	for _, plugin := range s.plugins {
+		p := plugin
+		if err := p.Init(s.output, s); err != nil {
+			log.Error("failed to initialize, plugin will be disabled ", zap.String("plugin", p.Name()), zap.Error(err))
+			continue
+		}
 
 		// add middle ware
 		next := s.handler
@@ -179,21 +195,9 @@ func (s *Slack) AddPlugins(plugins ...Plugin) error {
 			}
 			return next(msg)
 		}
-		log.Info("Added plugin", zap.String("name", p.Name()))
+		log.Info("Initialized", zap.String("plugin", p.Name()))
 	}
 
-	return nil
-}
-
-func (s *Slack) Start() error {
-	if err := s.init(); err != nil {
-		return fmt.Errorf("failed to initialize connection: %s", err)
-	}
-	for _, p := range s.plugins {
-		if err := p.Init(s.output, s); err != nil {
-			return fmt.Errorf("failed to initialize plugin %q: %s", p.Name(), err)
-		}
-	}
 	conn, _, err := websocket.DefaultDialer.Dial(s.url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to websocket: %s", err)
