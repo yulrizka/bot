@@ -17,7 +17,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/uber-go/zap"
 	"mime/multipart"
-	"net/http/httputil"
 )
 
 const slackURL = "https://slack.com/api"
@@ -885,7 +884,6 @@ func (s *Slack) UploadFile(chatID string, filename string, r io.Reader) error {
 	var err error
 	w := multipart.NewWriter(&b)
 
-
 	fw, err = w.CreateFormFile("file", filename)
 	if err != nil {
 		return fmt.Errorf("Failed to create multipart filed: %v", err)
@@ -916,7 +914,6 @@ func (s *Slack) UploadFile(chatID string, filename string, r io.Reader) error {
 	//url := "https://hookb.in/ZB7g11VG"
 	req, err := http.NewRequest("POST", url, &b)
 	req.Header.Set("Content-Type", w.FormDataContentType())
-
 
 	// curl -F file=@dramacat.gif -F channels=C024BE91L,#general -F token=xxxx-xxxxxxxxx-xxxx https://slack.com/api/files.upload
 	resp, err := http.DefaultClient.Do(req)
