@@ -180,6 +180,7 @@ func (s *Slack) AddPlugins(plugins ...Plugin) error {
 			}
 			return next(msg)
 		}
+		log.Info("Added plugin", zap.String("name", p.Name()))
 	}
 
 	return nil
