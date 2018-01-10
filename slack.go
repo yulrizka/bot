@@ -910,13 +910,6 @@ func (s *Slack) UploadFile(chatID string, filename string, r io.Reader) error {
 		return fmt.Errorf("failed to add form field channels value", err)
 	}
 
-	// content
-	//if fw, err = w.CreateFormField("content"); err != nil {
-	//	return fmt.Errorf("failed to add form field channels", err)
-	//}
-	//if _, err = fw.Write([]byte("HELLO ahmy")); err != nil {
-	//	return fmt.Errorf("failed to add form field channels value", err)
-	//}
 	w.Close()
 
 	url := slackURL + "/files.upload"
@@ -925,17 +918,12 @@ func (s *Slack) UploadFile(chatID string, filename string, r io.Reader) error {
 	req.Header.Set("Content-Type", w.FormDataContentType())
 
 
-	body, _ := httputil.DumpRequest(req, true)
-	fmt.Printf("body = %+v\n", string(body)) // for debugging
-
 	// curl -F file=@dramacat.gif -F channels=C024BE91L,#general -F token=xxxx-xxxxxxxxx-xxxx https://slack.com/api/files.upload
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("chat.info request failed: %s", err)
 	}
 
-	body, _ = httputil.DumpResponse(resp, true)
-	fmt.Printf("body = %+v\n", string(body)) // for debugging
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("Got response status: %d", resp.StatusCode)
 	}
