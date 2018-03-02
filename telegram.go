@@ -562,7 +562,7 @@ func (t *Telegram) Mentioned(field string) bool {
 }
 
 func (t *Telegram) Mention(u User) string {
-	panic("TODO not implemented")
+	return "@" + u.Username
 }
 
 func (t *Telegram) UserByName(username string) (User, bool) {
