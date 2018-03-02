@@ -4,24 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 	"io"
+	"time"
 )
 
 // Client represent a chat client. Currently supports telegram
 type Client interface {
+	// AddPlugins will add each plugin as middleware, each message will flow to the Handle for each plugin unless
+	// previous plugin return handled equals true
 	AddPlugins(...Plugin) error
+	// Start listening for new messages and block
 	Start() error
+	// Stop listening for new messages
 	Stop()
-
-	UserName() string // bot username
+	// UserName of the bot
+	UserName() string
+	//Mentioned will return true filed is a mention to a user
 	Mentioned(field string) bool
-	Mention(User) string
-	FindUser(UserName string) (User, bool)
+	// Mention a user
+	Mention(user User) string
+	// UserByName find user by username
+	UserByName(username string) (User, bool)
+	// Get chat information such as topic etc
 	ChatInfo(chatID string) (ChatInfo, error)
+	// SetTopic for a channel
 	SetTopic(chatID, topic string) error
-
-	UploadFile(chatID string, filename string, r io.Reader)  error
+	//UploadFile to a channel
+	UploadFile(chatID string, filename string, r io.Reader) error
 }
 
 type Attachment struct {

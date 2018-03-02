@@ -2,10 +2,9 @@ package bot
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
-
-	"reflect"
 )
 
 type mockPlugin struct {
@@ -43,9 +42,8 @@ func TestSlack_AddPlugin(t *testing.T) {
 		}
 
 		p1 := mockPlugin{
-			InitFn: func(out chan Message) error {
-				return nil
-			},
+			NameFn: func() string { return "p1" },
+			InitFn: func(out chan Message) error { return nil },
 			HandleFn: func(m interface{}) (handled bool, msg interface{}) {
 				inMsg := m.(*Message)
 				inMsg.Text += "1"
@@ -54,9 +52,8 @@ func TestSlack_AddPlugin(t *testing.T) {
 		}
 
 		p2 := mockPlugin{
-			InitFn: func(out chan Message) error {
-				return nil
-			},
+			NameFn: func() string { return "p2" },
+			InitFn: func(out chan Message) error { return nil },
 			HandleFn: func(m interface{}) (handled bool, msg interface{}) {
 				inMsg := m.(*Message)
 				inMsg.Text += "2"
@@ -66,6 +63,7 @@ func TestSlack_AddPlugin(t *testing.T) {
 		}
 
 		s.AddPlugins(p1, p2)
+		s.initPlugin()
 		var m Message
 		handled, msgRaw := s.handler(&m)
 		msg := msgRaw.(*Message)
@@ -92,9 +90,8 @@ func TestSlack_AddPlugin(t *testing.T) {
 		}
 
 		p1 := mockPlugin{
-			InitFn: func(out chan Message) error {
-				return nil
-			},
+			NameFn: func() string { return "p1" },
+			InitFn: func(out chan Message) error { return nil },
 			HandleFn: func(in interface{}) (handled bool, msg interface{}) {
 				m := in.(*Message)
 				m.Text += "1"
@@ -102,9 +99,8 @@ func TestSlack_AddPlugin(t *testing.T) {
 			},
 		}
 		p2 := mockPlugin{
-			InitFn: func(out chan Message) error {
-				return nil
-			},
+			NameFn: func() string { return "p1" },
+			InitFn: func(out chan Message) error { return nil },
 			HandleFn: func(in interface{}) (handled bool, msg interface{}) {
 				m := in.(*Message)
 				m.Text += "2"
@@ -113,6 +109,7 @@ func TestSlack_AddPlugin(t *testing.T) {
 		}
 
 		s.AddPlugins(p1, p2)
+		s.initPlugin()
 		var m Message
 		handled, rawMsg := s.handler(&m)
 		if got, want := handled, true; got != want {
@@ -123,7 +120,7 @@ func TestSlack_AddPlugin(t *testing.T) {
 			t.Fatal("nil message")
 		}
 		if got, want := msg.Text, "1"; got != want {
-			t.Errorf("got handled %s want %s", got, want)
+			t.Errorf("got handled %q want %q", got, want)
 		}
 	})
 

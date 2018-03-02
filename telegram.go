@@ -2,9 +2,12 @@ package bot
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -12,12 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"context"
-
-	"github.com/pkg/errors"
 	"github.com/rcrowley/go-metrics"
-	"github.com/uber-go/zap"
-	"io"
 )
 
 // Options
@@ -27,31 +25,23 @@ var (
 	// OutboxWorker is the number of worker that sends message to telegram api
 	OutboxWorker     = 5
 	poolDuration     = 1 * time.Second
-	log              zap.Logger
 	maxMsgPerUpdates = 100
-
-	// stats
-	msgPerUpdateCount   = metrics.NewRegisteredCounter("telegram.messagePerUpdate", metrics.DefaultRegistry)
-	updateCount         = metrics.NewRegisteredCounter("telegram.updates.count", metrics.DefaultRegistry)
-	updateDuration      = metrics.NewRegisteredTimer("telegram.updates.duration", metrics.DefaultRegistry)
-	sendMessageDuration = metrics.NewRegisteredTimer("telegram.sendMessage.duration", metrics.DefaultRegistry)
-	msgTimeoutCount     = metrics.NewRegisteredCounter("telegram.sendMessage.timeout", metrics.DefaultRegistry)
-	msgFailedCount      = metrics.NewRegisteredCounter("telegram.sendMessage.failed", metrics.DefaultRegistry)
-	msgDiscardedCount   = metrics.NewRegisteredCounter("telegram.sendMessage.discarded", metrics.DefaultRegistry)
-	msgDroppedCount     = metrics.NewRegisteredCounter("telegram.sendMessage.dropped", metrics.DefaultRegistry)
 
 	// VERSION compile time info
 	VERSION = ""
 )
 
-func init() {
-	log = zap.New(zap.NewJSONEncoder(), zap.AddCaller(), zap.AddStacks(zap.FatalLevel))
-}
-
-// SetLogger replace the logger object
-func SetLogger(l zap.Logger) {
-	log = l.With(zap.String("module", "bot"))
-}
+// Metrics for telegram
+var (
+	StatsMsgPerUpdateCount   = metrics.NewRegisteredCounter("telegram.messagePerUpdate", metrics.DefaultRegistry)
+	StatsUpdateCount         = metrics.NewRegisteredCounter("telegram.updates.count", metrics.DefaultRegistry)
+	StatsUpdateDuration      = metrics.NewRegisteredTimer("telegram.updates.duration", metrics.DefaultRegistry)
+	StatsSendMessageDuration = metrics.NewRegisteredTimer("telegram.sendMessage.duration", metrics.DefaultRegistry)
+	StatsMsgTimeoutCount     = metrics.NewRegisteredCounter("telegram.sendMessage.timeout", metrics.DefaultRegistry)
+	StatsMsgFailedCount      = metrics.NewRegisteredCounter("telegram.sendMessage.failed", metrics.DefaultRegistry)
+	StatsMsgDiscardedCount   = metrics.NewRegisteredCounter("telegram.sendMessage.discarded", metrics.DefaultRegistry)
+	StatsMsgDroppedCount     = metrics.NewRegisteredCounter("telegram.sendMessage.dropped", metrics.DefaultRegistry)
+)
 
 /**
  * Telegram API specific data structure
@@ -195,7 +185,7 @@ type Telegram struct {
 // NewTelegram creates telegram API Client
 func NewTelegram(ctx context.Context, key string) (*Telegram, error) {
 	if key == "" {
-		log.Fatal("telegram API key must not be empty")
+		return nil, errors.New("empty key")
 	}
 	ctx, quit := context.WithCancel(ctx)
 	t := Telegram{
@@ -210,12 +200,12 @@ func NewTelegram(ctx context.Context, key string) (*Telegram, error) {
 
 	tresp, err := t.do("getMe")
 	if err != nil {
-		return nil, errors.Wrap(err, "getMe failed")
+		return nil, fmt.Errorf("getMe failed: %v", err)
 	}
 
 	var user TUser
 	if err := json.Unmarshal(tresp.Result, &user); err != nil {
-		return nil, errors.Wrap(err, "failed decoding response")
+		return nil, fmt.Errorf("failed decoding response: %v", err)
 	}
 	t.username = user.Username
 
@@ -248,7 +238,7 @@ func (t *Telegram) AddPlugins(plugins ...Plugin) error {
 			}
 			return next(msg)
 		}
-		log.Info("Added plugin", zap.String("name", p.Name()))
+		log(Info, fmt.Sprintf("Added plugin name:%s", p.Name()))
 	}
 
 	return nil
@@ -293,10 +283,11 @@ func (t *Telegram) poolOutbox() {
 			for {
 				select {
 				case m := <-input:
-					log.Debug("processing message", zap.String("chanID", m.Chat.ID), zap.Int("worker", i))
+					log(Debug, fmt.Sprintf("processing message chanID:%s worker:%d", m.Chat.ID, i))
+
 					if !m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter) {
-						msgDiscardedCount.Inc(1)
-						log.Warn("discarded message", zap.Object("msg", m), zap.Int("worker", i))
+						StatsMsgDiscardedCount.Inc(1)
+						log(Warn, fmt.Sprintf("discarded message msg:%+v worker:%d", m, i))
 						continue
 					}
 
@@ -308,7 +299,7 @@ func (t *Telegram) poolOutbox() {
 					if m.ReplyToID != "" {
 						id, err := strconv.ParseInt(m.ReplyToID, 10, 64)
 						if err != nil {
-							log.Error("failed to parse ReplyToID", zap.Error(err))
+							log(Error, fmt.Sprintf("failed to parse ReplyToID: %v", err))
 							continue
 						}
 						outMsg.ReplyToMessageID = &id
@@ -316,7 +307,7 @@ func (t *Telegram) poolOutbox() {
 
 					var b bytes.Buffer
 					if err := json.NewEncoder(&b).Encode(outMsg); err != nil {
-						log.Error("encoding message", zap.Error(err))
+						log(Error, fmt.Sprintf("failed to encoding message: %v", err))
 						continue
 					}
 					started := time.Now()
@@ -330,14 +321,14 @@ func (t *Telegram) poolOutbox() {
 							if m.Retry > 0 {
 								metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.droppedAfter.%d", m.Retry), metrics.DefaultRegistry).Inc(1)
 							}
-							log.Error("message dropped, not retrying", zap.Object("msg", m), zap.Int("worker", i))
-							msgDroppedCount.Inc(1)
+							log(Error, fmt.Sprintf("message dropped, not retrying msg:%+v worker:%d", m, i))
+							StatsMsgDroppedCount.Inc(1)
 							continue NEXTMESSAGE
 						}
 
 						if !m.DiscardAfter.IsZero() && time.Now().After(m.DiscardAfter) {
-							log.Error("message dropped, discarded", zap.Object("msg", m), zap.Int("worker", i))
-							msgDiscardedCount.Inc(1)
+							log(Error, fmt.Sprintf("message dropped msg:%+v worker:%d", m, i))
+							StatsMsgDiscardedCount.Inc(1)
 							continue NEXTMESSAGE
 						}
 						retries--
@@ -345,30 +336,31 @@ func (t *Telegram) poolOutbox() {
 						var resp *http.Response
 						resp, err = http.Post(fmt.Sprintf("%s/sendMessage", t.url), "application/json; charset=utf-10", &b)
 						if err != nil {
-							msgFailedCount.Inc(1)
+							StatsMsgFailedCount.Inc(1)
 							// check for timeout
 							if netError, ok := err.(net.Error); ok && netError.Timeout() {
-								msgTimeoutCount.Inc(1)
-								log.Error("sendMessage timeout", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Int("retries", retries), zap.Int("worker", i))
+								StatsMsgTimeoutCount.Inc(1)
+								log(Warn, fmt.Sprintf("timeout sending message ChatID:%s retries:%d worker:%d : %v", outMsg.ChatID, retries, i, err))
 								continue
 							}
 
 							// unknown error
-							msgDroppedCount.Inc(1)
-							log.Error("sendMessage failed, dropped", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", m), zap.Int("worker", i))
+							StatsMsgDroppedCount.Inc(1)
+
+							log(Error, fmt.Sprintf("sendMessage failed, dropped ChatID:%s retries:%d worker:%d : %v", outMsg.ChatID, retries, i, err))
 							continue NEXTMESSAGE
 						}
 						metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
 
 						if resp.StatusCode == 429 { // rate limited by telegram
-							msgFailedCount.Inc(1)
+							StatsMsgFailedCount.Inc(1)
 							if tresp, err = parseResponse(resp); err != nil {
-								log.Error("sendMessage 429", zap.Error(err))
 								var delay int
 								if n, err := fmt.Sscanf(tresp.Description, "Too Many Requests: retry after %d", &delay); err != nil && n == 1 {
 									if delay > 0 {
+										log(Warn, fmt.Sprintf("failed sending message, rate limited, will retry after %d second ChatID:%s retries:%d worker:%d: %v",
+											delay, outMsg.ChatID, retries, i, err))
 										d := time.Duration(delay) * time.Second
-										log.Warn("sendMessage delayed", zap.String("delay", d.String()))
 										time.Sleep(d)
 									}
 								}
@@ -384,9 +376,9 @@ func (t *Telegram) poolOutbox() {
 					attempt := retries - m.Retry + 1
 					metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.sendMessage.retry.%d", attempt), metrics.DefaultRegistry).Inc(1)
 
-					sendMessageDuration.UpdateSince(started)
+					StatsSendMessageDuration.UpdateSince(started)
 					if err != nil {
-						log.Error("parsing sendMessage response failed", zap.String("ChatID", outMsg.ChatID), zap.Error(err), zap.Object("msg", jsonMsg), zap.Int("worker", i))
+						log(Error, fmt.Sprintf("send message failed %s, msg:%+v worker:%d : failed parsing response : %v", outMsg.ChatID, jsonMsg, i, err))
 					}
 				case <-t.ctx.Done():
 					return
@@ -405,19 +397,19 @@ func (t *Telegram) poolInbox() {
 			started := time.Now()
 			resp, err := http.Get(fmt.Sprintf("%s/getUpdates?offset=%d", t.url, t.lastUpdate+1))
 			if err != nil {
-				log.Error("getUpdates failed", zap.Error(err))
-				updateDuration.UpdateSince(started)
+				log(Error, fmt.Sprintf("get new message failed: %v", err))
+				StatsUpdateDuration.UpdateSince(started)
 				continue
 			}
-			updateDuration.UpdateSince(started)
-			updateCount.Inc(1)
+			StatsUpdateDuration.UpdateSince(started)
+			StatsUpdateCount.Inc(1)
 			metrics.GetOrRegisterCounter(fmt.Sprintf("telegram.getUpdates.http.%d", resp.StatusCode), metrics.DefaultRegistry).Inc(1)
 
 			nMsg, err := t.parseInbox(resp)
 			if err != nil {
-				log.Error("parsing updates response failed", zap.Error(err))
+				log(Error, fmt.Sprintf("parsing new response message failed: %v", err))
 			}
-			msgPerUpdateCount.Inc(int64(nMsg))
+			StatsMsgPerUpdateCount.Inc(int64(nMsg))
 			if nMsg != maxMsgPerUpdates {
 				time.Sleep(poolDuration)
 			}
@@ -436,7 +428,7 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 	}
 
 	if !tresp.Ok {
-		log.Error("parsing response failed", zap.Int64("errorCode", tresp.ErrorCode), zap.String("description", tresp.Description))
+		log(Error, fmt.Sprintf("parsing response failed errorCode:%d description:%s", tresp.ErrorCode, tresp.Description))
 		return 0, nil
 	}
 
@@ -461,7 +453,7 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 			msg = m.ToMessage()
 		}
 
-		log.Debug("update", zap.Object("msg", msg))
+		log(Debug, fmt.Sprintf("new message: %+v", msg))
 		t.handler(msg)
 
 	}
@@ -484,8 +476,8 @@ func (t *Telegram) ChatInfo(chatID string) (ChatInfo, error) {
 
 // Chat gets chat information based on chatID
 func (t *Telegram) Chat(id string) (*TChat, error) {
-	url := fmt.Sprintf("getChat?chat_id=%s", url.QueryEscape(id))
-	resp, err := t.do(url)
+	s := fmt.Sprintf("getChat?chat_id=%s", url.QueryEscape(id))
+	resp, err := t.do(s)
 	if err != nil {
 		return nil, err
 	}
@@ -500,16 +492,16 @@ func (t *Telegram) Chat(id string) (*TChat, error) {
 
 // Leave a chat
 func (t *Telegram) Leave(chatID string) error {
-	url := fmt.Sprintf("leaveChat?chat_id=%s", url.QueryEscape(chatID))
-	_, err := t.do(url)
+	s := fmt.Sprintf("leaveChat?chat_id=%s", url.QueryEscape(chatID))
+	_, err := t.do(s)
 
 	return err
 }
 
 // Member check if userID is member of chatID
 func (t *Telegram) Member(chatID, userID string) (*TChatMember, error) {
-	url := fmt.Sprintf("getChatmember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
-	resp, err := t.do(url)
+	s := fmt.Sprintf("getChatmember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
+	resp, err := t.do(s)
 	if err != nil {
 		return nil, err
 	}
@@ -524,8 +516,8 @@ func (t *Telegram) Member(chatID, userID string) (*TChatMember, error) {
 
 // MembersCount gets the counts of member for a chat id
 func (t *Telegram) MembersCount(chatID string) (int, error) {
-	url := fmt.Sprintf("getChatMembersCount?chat_id=%s", url.QueryEscape(chatID))
-	resp, err := t.do(url)
+	s := fmt.Sprintf("getChatMembersCount?chat_id=%s", url.QueryEscape(chatID))
+	resp, err := t.do(s)
 	if err != nil {
 		return 0, err
 	}
@@ -538,15 +530,15 @@ func (t *Telegram) MembersCount(chatID string) (int, error) {
 
 // Kick userID from chatID
 func (t *Telegram) Kick(chatID, userID string) error {
-	url := fmt.Sprintf("kickChatMember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
-	_, err := t.do(url)
+	s := fmt.Sprintf("kickChatMember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
+	_, err := t.do(s)
 	return err
 }
 
 // Unban userID from chatID
 func (t *Telegram) Unban(chatID, userID string) error {
-	url := fmt.Sprintf("unbanChatMember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
-	_, err := t.do(url)
+	s := fmt.Sprintf("unbanChatMember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
+	_, err := t.do(s)
 	return err
 }
 
@@ -555,8 +547,8 @@ func (t *Telegram) SetTopic(chatID string, topic string) error {
 }
 
 func (t *Telegram) do(urlPath string) (*TResponse, error) {
-	url := fmt.Sprintf("%s/%s", t.url, urlPath)
-	resp, err := http.Get(url)
+	s := fmt.Sprintf("%s/%s", t.url, urlPath)
+	resp, err := http.Get(s)
 	if err != nil {
 		return nil, err
 	}
@@ -573,7 +565,7 @@ func (t *Telegram) Mention(u User) string {
 	panic("TODO not implemented")
 }
 
-func (t *Telegram) FindUser(username string) (User, bool) {
+func (t *Telegram) UserByName(username string) (User, bool) {
 	panic("TODO not implemented")
 }
 
@@ -589,7 +581,7 @@ func parseResponse(resp *http.Response) (*TResponse, error) {
 	return &tresp, nil
 }
 
-func (t *Telegram) UploadFile(chatID string, filename string, r io.Reader)  error {
+func (t *Telegram) UploadFile(chatID string, filename string, r io.Reader) error {
 	panic("TODO not implemented")
 }
 

@@ -1,22 +1,21 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	"bytes"
 	"github.com/gorilla/websocket"
-	"github.com/uber-go/zap"
-	"mime/multipart"
 )
 
 const slackURL = "https://slack.com/api"
@@ -42,14 +41,14 @@ type Slack struct {
 	handler func(interface{}) (handled bool, msg interface{})
 	plugins []Plugin
 
-	url             string
-	teamID          string
-	teamName        string
-	domain          string
-	enterprise_id   string
-	enterprise_name string
-	id              string
-	name            string
+	url            string
+	teamID         string
+	teamName       string
+	domain         string
+	enterpriseID   string
+	enterpriseName string
+	id             string
+	name           string
 
 	idToMember       map[string]slackUser
 	userNameToMember map[string]slackUser
@@ -179,28 +178,11 @@ func (s *Slack) Start() error {
 		return fmt.Errorf("failed to initialize connection: %s", err)
 	}
 
-	for _, plugin := range s.plugins {
-		p := plugin
-		if err := p.Init(s.output, s); err != nil {
-			log.Error("failed to initialize, plugin will be disabled ", zap.String("plugin", p.Name()), zap.Error(err))
-			continue
-		}
-
-		// add middle ware
-		next := s.handler
-		s.handler = func(inMsg interface{}) (handled bool, msg interface{}) {
-			ok, msg := p.Handle(inMsg)
-			if ok {
-				return true, msg
-			}
-			return next(msg)
-		}
-		log.Info("Initialized", zap.String("plugin", p.Name()))
-	}
+	s.initPlugin()
 
 	conn, _, err := websocket.DefaultDialer.Dial(s.url, nil)
 	if err != nil {
-		return fmt.Errorf("failed to connect to websocket: %s", err)
+		return fmt.Errorf("failed to connect to websocket %q: %s", s.url, err)
 	}
 
 	// handle incoming message
@@ -212,13 +194,13 @@ func (s *Slack) Start() error {
 			default:
 				_, raw, err := conn.ReadMessage()
 				if err != nil {
-					log.Error("failed to receive data: ", zap.Error(err))
+					log(Error, fmt.Sprintf("failed to receive data: %v", err))
 					continue
 				}
 
 				msg, err := s.parseIncomingMessage(raw)
 				if err != nil {
-					log.Error("failed to parse message: ", zap.Error(err), zap.String("raw", string(raw)))
+					log(Error, fmt.Sprintf("failed to parse message raw:%s : %v", string(raw), err))
 					continue
 				}
 				if msg == nil {
@@ -265,7 +247,7 @@ func (s *Slack) Start() error {
 					}
 					channel, err := s.imID(idOrUsername)
 					if err != nil {
-						log.Error("failed to get IM: ", zap.Error(err), zap.Object("msg", outMsg))
+						log(Error, fmt.Sprintf("failed to get chat %+v: %v", outMsg, err))
 						continue
 					}
 					msg.Chat.ID = channel
@@ -277,13 +259,13 @@ func (s *Slack) Start() error {
 				// if message has attachment, we must use the web API
 				if len(msg.Attachments) > 0 {
 					if err := s.chatPostMessage(msg); err != nil {
-						log.Error("failed to send message: ", zap.Error(err), zap.Object("msg", outMsg))
+						log(Error, fmt.Sprintf("failed to send message msg:%+v: %v", outMsg, err))
 					}
 					continue
 				}
 
 				if err := conn.WriteJSON(&outMsg); err != nil {
-					log.Error("failed to send message: ", zap.Error(err), zap.Object("msg", outMsg))
+					log(Error, fmt.Sprintf("failed to send message msg:%+v: %v", outMsg, err))
 					continue
 				}
 			case <-t.C:
@@ -293,7 +275,7 @@ func (s *Slack) Start() error {
 					Type string `json:"type"`
 				}{counter, "ping"}
 				if err := conn.WriteJSON(ping); err != nil {
-					log.Warn("failed to send ping: ", zap.Error(err))
+					log(Warn, fmt.Sprintf("failed to send ping: %v", err))
 				}
 			}
 		}
@@ -303,8 +285,29 @@ func (s *Slack) Start() error {
 	return nil
 }
 
+func (s *Slack) initPlugin() {
+	for _, plugin := range s.plugins {
+		p := plugin
+		if err := p.Init(s.output, s); err != nil {
+			log(Error, fmt.Sprintf("failed to initialize, plugin %q will be disabled: %v", p.Name(), err))
+			continue
+		}
+
+		// add middle ware
+		next := s.handler
+		s.handler = func(inMsg interface{}) (handled bool, msg interface{}) {
+			ok, msg := p.Handle(inMsg)
+			if ok {
+				return true, msg
+			}
+			return next(msg)
+		}
+		log(Info, fmt.Sprintf("Initialized %q", p.Name()))
+	}
+}
+
 func (s *Slack) init() error {
-	log.Info("Initializing Slack")
+	log(Info, fmt.Sprintf("Initializing Slack"))
 	data := url.Values{}
 	data.Set("token", s.token)
 
@@ -341,8 +344,8 @@ func (s *Slack) init() error {
 	s.teamID = sResp.Team.ID
 	s.teamName = sResp.Team.Name
 	s.domain = sResp.Team.Domain
-	s.enterprise_id = sResp.Team.EnterpriseID
-	s.enterprise_name = sResp.Team.EnterpriseName
+	s.enterpriseID = sResp.Team.EnterpriseID
+	s.enterpriseName = sResp.Team.EnterpriseName
 	s.id = sResp.Self.ID
 	s.name = sResp.Self.Name
 
@@ -394,7 +397,7 @@ func (s *Slack) init() error {
 		return fmt.Errorf("init failuers: %s", strings.Join(errs, ";"))
 	}
 
-	log.Info("Initialize completed", zap.String("botname", s.name), zap.String("botID", s.id))
+	log(Info, fmt.Sprintf("initialize completed botname: %s id:%s", s.name, s.id))
 
 	// since it's not used and quite some big response, skip it for now
 	enableFetchChannels := true
@@ -406,7 +409,7 @@ func (s *Slack) init() error {
 		var channels map[string]slackChannel
 		channels, err = channelsList(s.token)
 		if err != nil {
-			log.Error("failed to get list of channels", zap.Error(err))
+			log(Error, fmt.Sprintf("failed to get list of channels: +%v", err))
 			return
 		}
 		s.channels = channels
@@ -546,7 +549,7 @@ func (s *Slack) chatPostMessage(msg Message) error {
 }
 
 func (s *Slack) parseIncomingMessage(rawMsg []byte) (*Message, error) {
-	log.Debug("incoming", zap.String("rawMsg", string(rawMsg)))
+	log(Debug, fmt.Sprintf("incoming rawMsg:%s", rawMsg))
 
 	var rawType struct {
 		Type string
@@ -693,7 +696,7 @@ func (s *Slack) Mention(u User) string {
 	return "<@" + u.ID + ">"
 }
 
-func (s *Slack) FindUser(username string) (User, bool) {
+func (s *Slack) UserByName(username string) (User, bool) {
 	if strings.HasPrefix(username, "@") {
 		username = username[1:]
 	}
@@ -890,33 +893,31 @@ func (s *Slack) UploadFile(chatID string, filename string, r io.Reader) error {
 
 	fw, err = w.CreateFormFile("file", filename)
 	if err != nil {
-		return fmt.Errorf("Failed to create multipart filed: %v", err)
+		return fmt.Errorf("failed to create multipart filed: %v", err)
 	}
 	if _, err := io.Copy(fw, r); err != nil {
-		return fmt.Errorf("Failed to read source file: %v", err)
+		return fmt.Errorf("failed to read source file: %v", err)
 	}
 
 	// token
 	if fw, err = w.CreateFormField("token"); err != nil {
-		return fmt.Errorf("failed to add form field token", err)
+		return fmt.Errorf("failed to add form field token: %v", err)
 	}
 	if _, err = fw.Write([]byte(s.token)); err != nil {
-		return fmt.Errorf("failed to add form field token value", err)
+		return fmt.Errorf("failed to add form field token value: %v", err)
 	}
 
 	// channels
 	if fw, err = w.CreateFormField("channels"); err != nil {
-		return fmt.Errorf("failed to add form field channels", err)
+		return fmt.Errorf("failed to add form field channels: %v", err)
 	}
 	if _, err = fw.Write([]byte(chatID)); err != nil {
-		return fmt.Errorf("failed to add form field channels value", err)
+		return fmt.Errorf("failed to add form field channels value: %v", err)
 	}
 
 	w.Close()
 
-	url := slackURL + "/files.upload"
-	//url := "https://hookb.in/ZB7g11VG"
-	req, err := http.NewRequest("POST", url, &b)
+	req, err := http.NewRequest("POST", slackURL+"/files.upload", &b)
 	req.Header.Set("Content-Type", w.FormDataContentType())
 
 	// curl -F file=@dramacat.gif -F channels=C024BE91L,#general -F token=xxxx-xxxxxxxxx-xxxx https://slack.com/api/files.upload
@@ -926,7 +927,7 @@ func (s *Slack) UploadFile(chatID string, filename string, r io.Reader) error {
 	}
 
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("Got response status: %d", resp.StatusCode)
+		return fmt.Errorf("got response status: %d", resp.StatusCode)
 	}
 
 	return nil

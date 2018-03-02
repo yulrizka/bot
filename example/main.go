@@ -12,6 +12,7 @@ import (
 
 // marcoPolo is an example plugin that will reply text marco with polo
 type marcoPolo struct {
+	cl  bot.Client
 	out chan bot.Message
 }
 
@@ -19,12 +20,10 @@ func (*marcoPolo) Name() string {
 	return "MarcoPolo"
 }
 
-// Initialize should store the out channel to send message and return
-// input channel which is an inbox for new channel.
-// The reason 'in' is a return value so that plugin can specify the size
-// of the channel
-func (m *marcoPolo) Init(out chan bot.Message) error {
+// Init should store the out channel to send message and do initialization
+func (m *marcoPolo) Init(out chan bot.Message, cl bot.Client) error {
 	m.out = out
+	m.cl = cl
 	return nil
 }
 
@@ -42,10 +41,18 @@ func (m *marcoPolo) Handle(rawMsg interface{}) (handled bool, modifiedMsg interf
 			m.out <- msg
 		}
 	}
-	// here we have the chance to modify message and pass it a long to other plugins down the line
-	// setting handled to true will stop the processing.
+
+	// handled true will stop exit the middleware chain. Handle method of the next plugin will not be called
+	// modifiedMsg give plugin a chance to modify the message for the next plugin
 	handled, modifiedMsg = false, rawMsg
 	return
+}
+
+func init() {
+	// Log message is callback method that gives you chance to handle the log using your preferred library
+	bot.Log = func(record bot.LogRecord) {
+		log.Print(record)
+	}
 }
 
 func main() {
@@ -62,8 +69,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	plugin := marcoPolo{}
-	if err := client.AddPlugins(&plugin); err != nil {
+	plugin := new(marcoPolo)
+	if err := client.AddPlugins(plugin); err != nil {
 		panic(err)
 	}
 
