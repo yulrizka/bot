@@ -143,6 +143,43 @@ type slackError struct {
 	WarningMsg string
 }
 
+type slackConversation struct {
+	ID                 string        `json:"id"`
+	Name               string        `json:"name"`
+	IsChannel          bool          `json:"is_channel"`
+	IsGroup            bool          `json:"is_group"`
+	IsIm               bool          `json:"is_im"`
+	Created            int           `json:"created"`
+	Creator            string        `json:"creator"`
+	IsArchived         bool          `json:"is_archived"`
+	IsGeneral          bool          `json:"is_general"`
+	Unlinked           int           `json:"unlinked"`
+	NameNormalized     string        `json:"name_normalized"`
+	IsReadOnly         bool          `json:"is_read_only"`
+	IsShared           bool          `json:"is_shared"`
+	ParentConversation interface{}   `json:"parent_conversation"`
+	IsExtShared        bool          `json:"is_ext_shared"`
+	IsOrgShared        bool          `json:"is_org_shared"`
+	PendingShared      []interface{} `json:"pending_shared"`
+	IsPendingExtShared bool          `json:"is_pending_ext_shared"`
+	IsMember           bool          `json:"is_member"`
+	IsPrivate          bool          `json:"is_private"`
+	IsMpim             bool          `json:"is_mpim"`
+	LastRead           string        `json:"last_read"`
+	Topic              struct {
+		Value   string `json:"value"`
+		Creator string `json:"creator"`
+		LastSet int    `json:"last_set"`
+	} `json:"topic"`
+	Purpose struct {
+		Value   string `json:"value"`
+		Creator string `json:"creator"`
+		LastSet int    `json:"last_set"`
+	} `json:"purpose"`
+	PreviousNames []string `json:"previous_names"`
+	Locale        string   `json:"locale"`
+}
+
 func (ew slackError) Error() string {
 	return fmt.Sprintf("%s error:%q warning:%q", ew.Message, ew.ErrorMsg, ew.WarningMsg)
 }
@@ -744,7 +781,7 @@ func (s *Slack) channelSetTopic(chatID string, topic string) error {
 	data.Set("token", s.token)
 	data.Set("channel", chatID)
 	data.Set("topic", topic)
-	resp, err := http.Post(slackURL+"/channels.setTopic", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	resp, err := http.Post(slackURL+"/conversations.setTopic", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return fmt.Errorf("chat.setTopic request failed: %s", err)
 	}
@@ -813,7 +850,7 @@ func (s *Slack) channelInfo(chatID string) (c ChatInfo, err error) {
 	data := url.Values{}
 	data.Set("token", s.token)
 	data.Set("channel", chatID)
-	resp, err := http.Post(slackURL+"/channels.info", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	resp, err := http.Post(slackURL+"/conversations.info", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return c, fmt.Errorf("channel.info request failed: %s", err)
 	}
@@ -824,23 +861,23 @@ func (s *Slack) channelInfo(chatID string) (c ChatInfo, err error) {
 
 	var sResp struct {
 		slackResponse
-		slackChannel `json:"channel"`
+		slackConversation `json:"channel"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
 		return c, fmt.Errorf("failed to parse response: %s", err)
 	}
 	if !sResp.Ok {
 		return c, slackError{
-			Message:    "channels.info failed",
+			Message:    "conversations.info failed",
 			ErrorMsg:   sResp.Error,
 			WarningMsg: sResp.Warning,
 		}
 	}
 
-	c.ID = sResp.slackChannel.Id
-	c.Title = sResp.slackChannel.Name
-	c.Topic = sResp.slackChannel.Topic.Value
-	c.Description = sResp.slackChannel.Purpose.Value
+	c.ID = sResp.slackConversation.ID
+	c.Title = sResp.slackConversation.Name
+	c.Topic = sResp.slackConversation.Topic.Value
+	c.Description = sResp.slackConversation.Purpose.Value
 
 	return c, nil
 
