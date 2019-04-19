@@ -9,8 +9,8 @@ import (
 
 type mockPlugin struct {
 	NameFn   func() string
-	InitFn   func(out chan Message) error
-	HandleFn func(interface{}) (handled bool, msg interface{})
+	InitFn   func(ctx context.Context, out chan Message) error
+	HandleFn func(context.Context, interface{}) (handled bool, msg interface{})
 }
 
 func (m mockPlugin) Name() string {
@@ -19,32 +19,31 @@ func (m mockPlugin) Name() string {
 	}
 	return m.NameFn()
 }
-func (m mockPlugin) Init(out chan Message, cli Client) error {
+func (m mockPlugin) Init(ctx context.Context, out chan Message, cli Client) error {
 	if m.InitFn == nil {
 		panic("not implemented")
 	}
-	return m.InitFn(out)
+	return m.InitFn(ctx, out)
 }
-func (m mockPlugin) Handle(inMsg interface{}) (handled bool, msg interface{}) {
+func (m mockPlugin) Handle(ctx context.Context, inMsg interface{}) (handled bool, msg interface{}) {
 	if m.HandleFn == nil {
 		panic("not implemented")
 	}
-	return m.HandleFn(inMsg)
+	return m.HandleFn(ctx, inMsg)
 }
 
 func TestSlack_AddPlugin(t *testing.T) {
 	t.Run("full chain", func(t *testing.T) {
 
-		ctx := context.Background()
-		s, err := NewSlack(ctx, "")
+		s, err := NewSlack("")
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		p1 := mockPlugin{
 			NameFn: func() string { return "p1" },
-			InitFn: func(out chan Message) error { return nil },
-			HandleFn: func(m interface{}) (handled bool, msg interface{}) {
+			InitFn: func(ctx context.Context, out chan Message) error { return nil },
+			HandleFn: func(ctx context.Context, m interface{}) (handled bool, msg interface{}) {
 				inMsg := m.(*Message)
 				inMsg.Text += "1"
 				return false, inMsg.WithContext(context.WithValue(ctx, "val", "1"))
@@ -53,8 +52,8 @@ func TestSlack_AddPlugin(t *testing.T) {
 
 		p2 := mockPlugin{
 			NameFn: func() string { return "p2" },
-			InitFn: func(out chan Message) error { return nil },
-			HandleFn: func(m interface{}) (handled bool, msg interface{}) {
+			InitFn: func(ctx context.Context, out chan Message) error { return nil },
+			HandleFn: func(ctx context.Context, m interface{}) (handled bool, msg interface{}) {
 				inMsg := m.(*Message)
 				inMsg.Text += "2"
 				val := inMsg.Context().Value("val")
@@ -62,8 +61,12 @@ func TestSlack_AddPlugin(t *testing.T) {
 			},
 		}
 
-		s.AddPlugins(p1, p2)
-		s.initPlugin()
+		err = s.AddPlugins(p1, p2)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		s.initPlugins(context.Background())
 		var m Message
 		handled, msgRaw := s.handler(&m)
 		msg := msgRaw.(*Message)
@@ -84,15 +87,15 @@ func TestSlack_AddPlugin(t *testing.T) {
 	})
 
 	t.Run("short circuit", func(t *testing.T) {
-		s, err := NewSlack(context.Background(), "")
+		s, err := NewSlack("")
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		p1 := mockPlugin{
 			NameFn: func() string { return "p1" },
-			InitFn: func(out chan Message) error { return nil },
-			HandleFn: func(in interface{}) (handled bool, msg interface{}) {
+			InitFn: func(ctx context.Context, out chan Message) error { return nil },
+			HandleFn: func(ctx context.Context, in interface{}) (handled bool, msg interface{}) {
 				m := in.(*Message)
 				m.Text += "1"
 				return true, m
@@ -100,16 +103,22 @@ func TestSlack_AddPlugin(t *testing.T) {
 		}
 		p2 := mockPlugin{
 			NameFn: func() string { return "p1" },
-			InitFn: func(out chan Message) error { return nil },
-			HandleFn: func(in interface{}) (handled bool, msg interface{}) {
+			InitFn: func(ctx context.Context, out chan Message) error { return nil },
+			HandleFn: func(ctx context.Context, in interface{}) (handled bool, msg interface{}) {
 				m := in.(*Message)
 				m.Text += "2"
 				return true, m
 			},
 		}
 
-		s.AddPlugins(p1, p2)
-		s.initPlugin()
+		ctx := context.Background()
+
+		err = s.AddPlugins(p1, p2)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		s.initPlugins(ctx)
 		var m Message
 		handled, rawMsg := s.handler(&m)
 		if got, want := handled, true; got != want {

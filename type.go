@@ -14,9 +14,7 @@ type Client interface {
 	// previous plugin return handled equals true
 	AddPlugins(...Plugin) error
 	// Start listening for new messages and block
-	Start() error
-	// Stop listening for new messages
-	Stop()
+	Start(context.Context) error
 	// UserName of the bot
 	UserName() string
 	//Mentioned will return true filed is a mention to a user
@@ -26,11 +24,11 @@ type Client interface {
 	// UserByName find user by username
 	UserByName(username string) (User, bool)
 	// Get chat information such as topic etc
-	ChatInfo(chatID string) (ChatInfo, error)
+	ChatInfo(ctx context.Context, chatID string) (ChatInfo, error)
 	// SetTopic for a channel
-	SetTopic(chatID, topic string) error
+	SetTopic(ctx context.Context, chatID, topic string) error
 	//UploadFile to a channel
-	UploadFile(chatID string, filename string, r io.Reader) error
+	UploadFile(ctx context.Context, chatID string, filename string, r io.Reader) error
 }
 
 type Attachment struct {
@@ -60,10 +58,7 @@ type Message struct {
 }
 
 func (m *Message) Context() context.Context {
-	if m.ctx != nil {
-		return m.ctx
-	}
-	return context.Background()
+	return m.ctx
 }
 
 func (m *Message) WithContext(ctx context.Context) *Message {
@@ -156,6 +151,6 @@ func (t Chat) Name() string {
 // Plugin is pluggable module to process messages
 type Plugin interface {
 	Name() string
-	Init(out chan Message, cl Client) error
-	Handle(in interface{}) (handled bool, msg interface{})
+	Init(ctx context.Context, out chan Message, cl Client) error
+	Handle(ctx context.Context, in interface{}) (handled bool, msg interface{})
 }

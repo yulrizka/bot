@@ -179,10 +179,12 @@ type Telegram struct {
 	output   chan Message
 
 	lastUpdate int64
+	plugins    []Plugin
 	handler    func(interface{}) (handled bool, msg interface{})
 }
 
 // NewTelegram creates telegram API Client
+//noinspection GoUnusedExportedFunction
 func NewTelegram(ctx context.Context, key string) (*Telegram, error) {
 	if key == "" {
 		return nil, errors.New("empty key")
@@ -198,7 +200,7 @@ func NewTelegram(ctx context.Context, key string) (*Telegram, error) {
 		},
 	}
 
-	tresp, err := t.do("getMe")
+	tresp, err := t.do(ctx, "getMe")
 	if err != nil {
 		return nil, fmt.Errorf("getMe failed: %v", err)
 	}
@@ -224,7 +226,15 @@ func (t *Telegram) AddPlugins(plugins ...Plugin) error {
 	}
 	for i := len(plugins) - 1; i >= 0; i-- {
 		p := plugins[i]
-		err := p.Init(t.output, t)
+		t.plugins = append(t.plugins, p)
+	}
+
+	return nil
+}
+
+func (t *Telegram) initPlugins(ctx context.Context) error {
+	for _, p := range t.plugins {
+		err := p.Init(ctx, t.output, t)
 		if err != nil {
 			return err
 		}
@@ -232,7 +242,7 @@ func (t *Telegram) AddPlugins(plugins ...Plugin) error {
 		// add middle ware
 		next := t.handler
 		t.handler = func(inMsg interface{}) (handled bool, msg interface{}) {
-			ok, msg := p.Handle(inMsg)
+			ok, msg := p.Handle(ctx, inMsg)
 			if ok {
 				return true, msg
 			}
@@ -245,7 +255,12 @@ func (t *Telegram) AddPlugins(plugins ...Plugin) error {
 }
 
 // Start consuming from telegram
-func (t *Telegram) Start() error {
+func (t *Telegram) Start(ctx context.Context) error {
+	err := t.initPlugins(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load plugins: %v", err)
+	}
+
 	t.poolOutbox()
 	t.poolInbox()
 	<-t.ctx.Done()
@@ -254,7 +269,6 @@ func (t *Telegram) Start() error {
 }
 
 func (t *Telegram) Stop() {
-	t.quit()
 }
 
 func (t *Telegram) poolOutbox() {
@@ -269,7 +283,11 @@ func (t *Telegram) poolOutbox() {
 		for {
 			h.Reset()
 			m := <-t.output
-			h.Write([]byte(m.Chat.ID))
+			_, err := h.Write([]byte(m.Chat.ID))
+			if err != nil {
+				log(Error, fmt.Sprintf("failed when writing hash: %v", err))
+			}
+
 			i := int(h.Sum32()) % OutboxWorker
 			inChs[i] <- m
 		}
@@ -396,6 +414,7 @@ func (t *Telegram) poolInbox() {
 		default:
 			started := time.Now()
 			resp, err := http.Get(fmt.Sprintf("%s/getUpdates?offset=%d", t.url, t.lastUpdate+1))
+
 			if err != nil {
 				log(Error, fmt.Sprintf("get new message failed: %v", err))
 				StatsUpdateDuration.UpdateSince(started)
@@ -433,10 +452,19 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 	}
 
 	var results []TUpdate
-	json.Unmarshal(tresp.Result, &results)
+	err := json.Unmarshal(tresp.Result, &results)
+	if err != nil {
+		return 0, fmt.Errorf("json marshall failed: %v", err)
+	}
+
 	for _, update := range results {
 		var m TMessage
-		json.Unmarshal(update.Message, &m)
+		err := json.Unmarshal(update.Message, &m)
+		if err != nil {
+			log(Error, fmt.Sprintf("json marshall failed, continue with the next result: %v", err))
+			continue
+		}
+
 		t.lastUpdate = update.UpdateID
 		m.ReceivedAt = receivedAt
 		m.Raw = update.Message
@@ -461,9 +489,9 @@ func (t *Telegram) parseInbox(resp *http.Response) (int, error) {
 	return len(results), nil
 }
 
-func (t *Telegram) ChatInfo(chatID string) (ChatInfo, error) {
+func (t *Telegram) ChatInfo(ctx context.Context, chatID string) (ChatInfo, error) {
 	ci := ChatInfo{}
-	tchat, err := t.Chat(chatID)
+	tchat, err := t.Chat(ctx, chatID)
 	if err != nil {
 		return ci, err
 	}
@@ -475,9 +503,9 @@ func (t *Telegram) ChatInfo(chatID string) (ChatInfo, error) {
 }
 
 // Chat gets chat information based on chatID
-func (t *Telegram) Chat(id string) (*TChat, error) {
+func (t *Telegram) Chat(ctx context.Context, id string) (*TChat, error) {
 	s := fmt.Sprintf("getChat?chat_id=%s", url.QueryEscape(id))
-	resp, err := t.do(s)
+	resp, err := t.do(ctx, s)
 	if err != nil {
 		return nil, err
 	}
@@ -491,17 +519,17 @@ func (t *Telegram) Chat(id string) (*TChat, error) {
 }
 
 // Leave a chat
-func (t *Telegram) Leave(chatID string) error {
+func (t *Telegram) Leave(ctx context.Context, chatID string) error {
 	s := fmt.Sprintf("leaveChat?chat_id=%s", url.QueryEscape(chatID))
-	_, err := t.do(s)
+	_, err := t.do(ctx, s)
 
 	return err
 }
 
 // Member check if userID is member of chatID
-func (t *Telegram) Member(chatID, userID string) (*TChatMember, error) {
+func (t *Telegram) Member(ctx context.Context, chatID, userID string) (*TChatMember, error) {
 	s := fmt.Sprintf("getChatmember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
-	resp, err := t.do(s)
+	resp, err := t.do(ctx, s)
 	if err != nil {
 		return nil, err
 	}
@@ -515,9 +543,9 @@ func (t *Telegram) Member(chatID, userID string) (*TChatMember, error) {
 }
 
 // MembersCount gets the counts of member for a chat id
-func (t *Telegram) MembersCount(chatID string) (int, error) {
+func (t *Telegram) MembersCount(ctx context.Context, chatID string) (int, error) {
 	s := fmt.Sprintf("getChatMembersCount?chat_id=%s", url.QueryEscape(chatID))
-	resp, err := t.do(s)
+	resp, err := t.do(ctx, s)
 	if err != nil {
 		return 0, err
 	}
@@ -529,29 +557,35 @@ func (t *Telegram) MembersCount(chatID string) (int, error) {
 }
 
 // Kick userID from chatID
-func (t *Telegram) Kick(chatID, userID string) error {
+func (t *Telegram) Kick(ctx context.Context, chatID, userID string) error {
 	s := fmt.Sprintf("kickChatMember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
-	_, err := t.do(s)
+	_, err := t.do(ctx, s)
 	return err
 }
 
 // Unban userID from chatID
-func (t *Telegram) Unban(chatID, userID string) error {
+func (t *Telegram) Unban(ctx context.Context, chatID, userID string) error {
 	s := fmt.Sprintf("unbanChatMember?chat_id=%s&user_id=%s", url.QueryEscape(chatID), url.QueryEscape(userID))
-	_, err := t.do(s)
+	_, err := t.do(ctx, s)
 	return err
 }
 
-func (t *Telegram) SetTopic(chatID string, topic string) error {
-	return fmt.Errorf("Telegram: Set topic is not implemented")
+func (t *Telegram) SetTopic(ctx context.Context, chatID string, topic string) error {
+	return fmt.Errorf("telegram: Set topic is not implemented")
 }
 
-func (t *Telegram) do(urlPath string) (*TResponse, error) {
+func (t *Telegram) do(ctx context.Context, urlPath string) (*TResponse, error) {
 	s := fmt.Sprintf("%s/%s", t.url, urlPath)
-	resp, err := http.Get(s)
+	req, err := http.NewRequest("GET", s, nil)
 	if err != nil {
 		return nil, err
 	}
+	req = req.WithContext(ctx)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
 	defer resp.Body.Close()
 
 	return parseResponse(resp)
@@ -581,11 +615,12 @@ func parseResponse(resp *http.Response) (*TResponse, error) {
 	return &tresp, nil
 }
 
-func (t *Telegram) UploadFile(chatID string, filename string, r io.Reader) error {
+func (t *Telegram) UploadFile(ctx context.Context, chatID string, filename string, r io.Reader) error {
 	panic("TODO not implemented")
 }
 
 //TelegramEscape escapes html that is acceptable by telegram
+//noinspection GoUnusedExportedFunction
 func TelegramEscape(s string) string {
 	s = strings.Replace(s, "&", "&amp;", -1)
 	s = strings.Replace(s, "<", "&lt;", -1)

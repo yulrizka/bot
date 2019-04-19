@@ -21,7 +21,7 @@ func (*marcoPolo) Name() string {
 }
 
 // Init should store the out channel to send message and do initialization
-func (m *marcoPolo) Init(out chan bot.Message, cl bot.Client) error {
+func (m *marcoPolo) Init(ctx context.Context, out chan bot.Message, cl bot.Client) error {
 	m.out = out
 	m.cl = cl
 	return nil
@@ -65,12 +65,13 @@ func main() {
 	var client bot.Client
 	var err error
 
-	client, err = bot.NewSlack(context.Background(), key)
+	ctx := context.Background()
+	client, err = bot.NewSlack(key)
 	if err != nil {
 		log.Fatal(err)
 	}
 	plugin := new(marcoPolo)
-	if err := client.AddPlugins(plugin); err != nil {
+	if err := client.AddPlugins(ctx, plugin); err != nil {
 		panic(err)
 	}
 

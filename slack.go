@@ -32,8 +32,6 @@ var (
 )
 
 type Slack struct {
-	ctx    context.Context
-	quit   context.CancelFunc
 	token  string
 	input  map[Plugin]chan interface{}
 	output chan Message
@@ -184,11 +182,8 @@ func (ew slackError) Error() string {
 	return fmt.Sprintf("%s error:%q warning:%q", ew.Message, ew.ErrorMsg, ew.WarningMsg)
 }
 
-func NewSlack(ctx context.Context, token string) (*Slack, error) {
-	ctx, quit := context.WithCancel(ctx)
+func NewSlack(token string) (*Slack, error) {
 	return &Slack{
-		ctx:    ctx,
-		quit:   quit,
 		token:  token,
 		input:  make(map[Plugin]chan interface{}),
 		output: make(chan Message, OutboxBufferSize),
@@ -210,12 +205,12 @@ func (s *Slack) AddPlugins(plugins ...Plugin) error {
 	return nil
 }
 
-func (s *Slack) Start() error {
-	if err := s.init(); err != nil {
+func (s *Slack) Start(ctx context.Context) error {
+	if err := s.init(ctx); err != nil {
 		return fmt.Errorf("failed to initialize connection: %s", err)
 	}
 
-	s.initPlugin()
+	s.initPlugins(ctx)
 
 	conn, _, err := websocket.DefaultDialer.Dial(s.url, nil)
 	if err != nil {
@@ -226,7 +221,7 @@ func (s *Slack) Start() error {
 	go func() {
 		for {
 			select {
-			case <-s.ctx.Done():
+			case <-ctx.Done():
 				return
 			default:
 				_, raw, err := conn.ReadMessage()
@@ -259,7 +254,7 @@ func (s *Slack) Start() error {
 		defer t.Stop()
 		for {
 			select {
-			case <-s.ctx.Done():
+			case <-ctx.Done():
 				return
 			case msg := <-s.output:
 				counter++
@@ -282,7 +277,7 @@ func (s *Slack) Start() error {
 					if idOrUsername == "" {
 						idOrUsername = msg.Chat.Username
 					}
-					channel, err := s.imID(idOrUsername)
+					channel, err := s.imID(ctx, idOrUsername)
 					if err != nil {
 						log(Error, fmt.Sprintf("failed to get chat %+v: %v", outMsg, err))
 						continue
@@ -295,7 +290,7 @@ func (s *Slack) Start() error {
 
 				// if message has attachment, we must use the web API
 				if len(msg.Attachments) > 0 {
-					if err := s.chatPostMessage(msg); err != nil {
+					if err := s.chatPostMessage(ctx, msg); err != nil {
 						log(Error, fmt.Sprintf("failed to send message msg:%+v: %v", outMsg, err))
 					}
 					continue
@@ -318,14 +313,14 @@ func (s *Slack) Start() error {
 		}
 
 	}()
-	<-s.ctx.Done()
+	<-ctx.Done()
 	return nil
 }
 
-func (s *Slack) initPlugin() {
+func (s *Slack) initPlugins(ctx context.Context) {
 	for _, plugin := range s.plugins {
 		p := plugin
-		if err := p.Init(s.output, s); err != nil {
+		if err := p.Init(ctx, s.output, s); err != nil {
 			log(Error, fmt.Sprintf("failed to initialize, plugin %q will be disabled: %v", p.Name(), err))
 			continue
 		}
@@ -333,7 +328,7 @@ func (s *Slack) initPlugin() {
 		// add middle ware
 		next := s.handler
 		s.handler = func(inMsg interface{}) (handled bool, msg interface{}) {
-			ok, msg := p.Handle(inMsg)
+			ok, msg := p.Handle(ctx, inMsg)
 			if ok {
 				return true, msg
 			}
@@ -343,12 +338,12 @@ func (s *Slack) initPlugin() {
 	}
 }
 
-func (s *Slack) init() error {
+func (s *Slack) init(ctx context.Context) error {
 	log(Info, fmt.Sprintf("Initializing Slack"))
 	data := url.Values{}
 	data.Set("token", s.token)
 
-	resp, err := http.Post(slackURL+"/rtm.connect", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	resp, err := s.doPost(ctx, slackURL+"/rtm.connect", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return fmt.Errorf("faile to create connect request: %s", err)
 	}
@@ -394,7 +389,7 @@ func (s *Slack) init() error {
 		}()
 
 		var members map[string]slackUser
-		members, err = userList(s.token)
+		members, err = s.userList(ctx)
 		if err != nil {
 			err = fmt.Errorf("failed to get list of user: %s", err)
 			return
@@ -414,7 +409,7 @@ func (s *Slack) init() error {
 		}()
 
 		var ims map[string]slackIm
-		ims, err = imList(s.token)
+		ims, err = s.imList(ctx)
 		if err != nil {
 			err = fmt.Errorf("failed to get list of user: %s", err)
 			return
@@ -444,7 +439,7 @@ func (s *Slack) init() error {
 		}
 
 		var channels map[string]slackChannel
-		channels, err = channelsList(s.token)
+		channels, err = s.channelsList(ctx)
 		if err != nil {
 			log(Error, fmt.Sprintf("failed to get list of channels: +%v", err))
 			return
@@ -459,12 +454,12 @@ func (s *Slack) init() error {
 	return nil
 }
 
-func userList(token string) (map[string]slackUser, error) {
+func (s *Slack) userList(ctx context.Context) (map[string]slackUser, error) {
 	data := url.Values{}
-	data.Set("token", token)
+	data.Set("token", s.token)
 	data.Set("presence", "true")
 
-	resp, err := http.Post(slackURL+"/users.list", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	resp, err := s.doPost(ctx, slackURL+"/users.list", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("faile to create connect request: %s", err)
 	}
@@ -489,11 +484,11 @@ func userList(token string) (map[string]slackUser, error) {
 	return members, nil
 }
 
-func imList(token string) (map[string]slackIm, error) {
+func (s *Slack) imList(ctx context.Context) (map[string]slackIm, error) {
 	data := url.Values{}
-	data.Set("token", token)
+	data.Set("token", s.token)
 
-	resp, err := http.Post(slackURL+"/im.list", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	resp, err := s.doPost(ctx, slackURL+"/im.list", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("faile to create connect request: %s", err)
 	}
@@ -519,11 +514,11 @@ func imList(token string) (map[string]slackIm, error) {
 	return ims, nil
 }
 
-func channelsList(token string) (map[string]slackChannel, error) {
+func (s *Slack) channelsList(ctx context.Context) (map[string]slackChannel, error) {
 	data := url.Values{}
-	data.Set("token", token)
+	data.Set("token", s.token)
 
-	resp, err := http.Post(slackURL+"/channels.list", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	resp, err := s.doPost(ctx, slackURL+"/channels.list", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("faile to create channels.list request: %s", err)
 	}
@@ -549,7 +544,7 @@ func channelsList(token string) (map[string]slackChannel, error) {
 	return channels, nil
 }
 
-func (s *Slack) chatPostMessage(msg Message) error {
+func (s *Slack) chatPostMessage(ctx context.Context, msg Message) error {
 	data := url.Values{}
 	data.Set("token", s.token)
 	data.Set("channel", msg.Chat.ID)
@@ -566,7 +561,7 @@ func (s *Slack) chatPostMessage(msg Message) error {
 		data.Set("thread_ts", msg.ReplyTo.ID)
 	}
 
-	resp, err := http.Post(slackURL+"/chat.postMessage", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	resp, err := s.doPost(ctx, slackURL+"/chat.postMessage", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return fmt.Errorf("chat.PostMessage request failed: %s", err)
 	}
@@ -662,15 +657,11 @@ func (s *Slack) parseIncomingMessage(rawMsg []byte) (*Message, error) {
 	return &msg, nil
 }
 
-func (s *Slack) Stop() {
-	s.quit()
-}
-
 func (s *Slack) UserName() string {
 	return s.name
 }
 
-func (s *Slack) imID(userIDorName string) (string, error) {
+func (s *Slack) imID(ctx context.Context, userIDorName string) (string, error) {
 	if userIDorName == "" {
 		return "", errors.New("empty username")
 	}
@@ -688,7 +679,7 @@ func (s *Slack) imID(userIDorName string) (string, error) {
 		data := url.Values{}
 		data.Set("token", s.token)
 		data.Set("user", userID)
-		resp, err := http.Post(slackURL+"/im.open", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+		resp, err := s.doPost(ctx, slackURL+"/im.open", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 		if err != nil {
 			return "", fmt.Errorf("failed to create connect request: %s", err)
 		}
@@ -763,25 +754,25 @@ func (s *Slack) EmulateReceiveMessage(raw []byte) error {
 	return nil
 }
 
-func (s *Slack) SetTopic(chatID string, topic string) error {
-	err := s.channelSetTopic(chatID, topic)
+func (s *Slack) SetTopic(ctx context.Context, chatID string, topic string) error {
+	err := s.channelSetTopic(ctx, chatID, topic)
 	if err != nil {
 		if slackErr, ok := err.(slackError); ok {
 			// it might be private group
 			if slackErr.ErrorMsg == "channel_not_found" {
-				err = s.groupSetTopic(chatID, topic)
+				err = s.groupSetTopic(ctx, chatID, topic)
 			}
 		}
 	}
 	return err
 }
 
-func (s *Slack) channelSetTopic(chatID string, topic string) error {
+func (s *Slack) channelSetTopic(ctx context.Context, chatID string, topic string) error {
 	data := url.Values{}
 	data.Set("token", s.token)
 	data.Set("channel", chatID)
 	data.Set("topic", topic)
-	resp, err := http.Post(slackURL+"/conversations.setTopic", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	resp, err := s.doPost(ctx, slackURL+"/conversations.setTopic", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return fmt.Errorf("chat.setTopic request failed: %s", err)
 	}
@@ -804,12 +795,12 @@ func (s *Slack) channelSetTopic(chatID string, topic string) error {
 	return nil
 }
 
-func (s *Slack) groupSetTopic(chatID string, topic string) error {
+func (s *Slack) groupSetTopic(ctx context.Context, chatID string, topic string) error {
 	data := url.Values{}
 	data.Set("token", s.token)
 	data.Set("channel", chatID)
 	data.Set("topic", topic)
-	resp, err := http.Post(slackURL+"/groups.setTopic", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	resp, err := s.doPost(ctx, slackURL+"/groups.setTopic", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return fmt.Errorf("groups.setTopic request failed: %s", err)
 	}
@@ -833,28 +824,30 @@ func (s *Slack) groupSetTopic(chatID string, topic string) error {
 	return nil
 }
 
-func (s *Slack) ChatInfo(chatID string) (ChatInfo, error) {
-	ci, err := s.channelInfo(chatID)
+func (s *Slack) ChatInfo(ctx context.Context, chatID string) (ChatInfo, error) {
+	ci, err := s.channelInfo(ctx, chatID)
 	if err != nil {
 		if slackErr, ok := err.(slackError); ok {
 			// it might be private group
 			if slackErr.ErrorMsg == "channel_not_found" {
-				ci, err = s.groupInfo(chatID)
+				ci, err = s.groupInfo(ctx, chatID)
 			}
 		}
 	}
 	return ci, err
 }
 
-func (s *Slack) channelInfo(chatID string) (c ChatInfo, err error) {
+func (s *Slack) channelInfo(ctx context.Context, chatID string) (c ChatInfo, err error) {
 	data := url.Values{}
 	data.Set("token", s.token)
 	data.Set("channel", chatID)
-	resp, err := http.Post(slackURL+"/conversations.info", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+
+	resp, err := s.doPost(ctx, slackURL+"/conversations.info", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return c, fmt.Errorf("channel.info request failed: %s", err)
 	}
 	defer func() {
+		//noinspection ALL
 		io.Copy(ioutil.Discard, resp.Body)
 		resp.Body.Close()
 	}()
@@ -883,16 +876,17 @@ func (s *Slack) channelInfo(chatID string) (c ChatInfo, err error) {
 
 }
 
-func (s *Slack) groupInfo(chatID string) (c ChatInfo, err error) {
+func (s *Slack) groupInfo(ctx context.Context, chatID string) (c ChatInfo, err error) {
 	data := url.Values{}
 	data.Set("token", s.token)
 	data.Set("channel", chatID)
-	resp, err := http.Post(slackURL+"/groups.info", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	resp, err := s.doPost(ctx, slackURL+"/groups.info", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
 		return c, fmt.Errorf("chat.info request failed: %s", err)
 	}
 
 	defer func() {
+		//noinspection ALL
 		io.Copy(ioutil.Discard, resp.Body)
 		resp.Body.Close()
 	}()
@@ -920,7 +914,7 @@ func (s *Slack) groupInfo(chatID string) (c ChatInfo, err error) {
 	return c, nil
 }
 
-func (s *Slack) UploadFile(chatID string, filename string, r io.Reader) error {
+func (s *Slack) UploadFile(ctx context.Context, chatID string, filename string, r io.Reader) error {
 
 	// write multipart filed
 	var b bytes.Buffer
@@ -952,10 +946,16 @@ func (s *Slack) UploadFile(chatID string, filename string, r io.Reader) error {
 		return fmt.Errorf("failed to add form field channels value: %v", err)
 	}
 
+	//noinspection ALL
 	w.Close()
 
 	req, err := http.NewRequest("POST", slackURL+"/files.upload", &b)
+	if err != nil {
+		return fmt.Errorf("failed to create http request: %v", err)
+	}
+
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	req = req.WithContext(ctx)
 
 	// curl -F file=@dramacat.gif -F channels=C024BE91L,#general -F token=xxxx-xxxxxxxxx-xxxx https://slack.com/api/files.upload
 	resp, err := http.DefaultClient.Do(req)
@@ -968,4 +968,15 @@ func (s *Slack) UploadFile(chatID string, filename string, r io.Reader) error {
 	}
 
 	return nil
+}
+
+func (s *Slack) doPost(ctx context.Context, url string, contentType string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest("POST", url, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req = req.WithContext(ctx)
+
+	return http.DefaultClient.Do(req)
 }
