@@ -230,7 +230,7 @@ func (s *Slack) Start(ctx context.Context) error {
 					continue
 				}
 
-				msg, err := s.parseIncomingMessage(raw)
+				msg, err := s.ParseRawMessage(raw)
 				if err != nil {
 					log(Error, fmt.Sprintf("failed to parse message raw:%s : %v", string(raw), err))
 					continue
@@ -580,7 +580,7 @@ func (s *Slack) chatPostMessage(ctx context.Context, msg Message) error {
 	return nil
 }
 
-func (s *Slack) parseIncomingMessage(rawMsg []byte) (*Message, error) {
+func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 	log(Debug, fmt.Sprintf("incoming rawMsg:%s", rawMsg))
 
 	var rawType struct {
@@ -604,6 +604,7 @@ func (s *Slack) parseIncomingMessage(rawMsg []byte) (*Message, error) {
 		Text        string
 		Ts          string
 		Attachments []Attachment
+		Files       []File
 		SubType     string
 		//SourceTeam string
 		//Team string
@@ -647,6 +648,7 @@ func (s *Slack) parseIncomingMessage(rawMsg []byte) (*Message, error) {
 			Text:        raw.Text,
 			Format:      Text,
 			Attachments: raw.Attachments,
+			Files:       raw.Files,
 		}
 		if raw.SubType == "bot_message" {
 			msg.From.Username = raw.Username
@@ -743,7 +745,7 @@ func (s *Slack) UserByName(username string) (User, bool) {
 }
 
 func (s *Slack) EmulateReceiveMessage(raw []byte) error {
-	msg, err := s.parseIncomingMessage(raw)
+	msg, err := s.ParseRawMessage(raw)
 	if err != nil {
 		return fmt.Errorf("failed to parse message: %s", err)
 	}
