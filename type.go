@@ -52,9 +52,28 @@ type Message struct {
 	ReplyToID    string
 	ReceivedAt   time.Time
 	Attachments  []Attachment
+	Files        []File
 	Raw          json.RawMessage `json:"-"`
 	Retry        int             `json:"-"`
 	DiscardAfter time.Time       `json:"-"`
+}
+
+type File struct {
+	Id        string
+	Name      string
+	Mimetype  string
+	Filetype  string
+	Url       string
+	UrlPublic string
+	To        []FileAddress
+	From      []FileAddress
+	PlainText string `json:"plain_text"`
+}
+
+type FileAddress struct {
+	Address  string `json:"address"`
+	Name     string `json:"name"`
+	Original string `json:"original"`
 }
 
 func (m *Message) Context() context.Context {

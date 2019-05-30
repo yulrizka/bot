@@ -172,7 +172,7 @@ func TestParseIncomingMessage(t *testing.T) {
 	for _, tt := range golden {
 		t.Run(tt.name, func(t *testing.T) {
 			s := Slack{}
-			got, err := s.parseIncomingMessage([]byte(tt.raw))
+			got, err := s.ParseRawMessage([]byte(tt.raw))
 			if (err != nil && !tt.wantErr) || (err == nil && tt.wantErr) {
 				t.Errorf("got error %s, want error %t ", err, tt.wantErr)
 			}
