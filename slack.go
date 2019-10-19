@@ -285,7 +285,7 @@ func (s *Slack) Start(ctx context.Context) error {
 					msg.Chat.ID = channel
 					outMsg.Channel = channel
 				case Thread:
-					outMsg.ThreadTs = msg.ReplyTo.ID
+					outMsg.ThreadTs = msg.ReplyToID
 				}
 
 				// if message has attachment, we must use the web API
@@ -580,6 +580,46 @@ func (s *Slack) chatPostMessage(ctx context.Context, msg Message) error {
 	return nil
 }
 
+func (s *Slack) ThreadReplies(ctx context.Context, chat Chat, threadID string) ([]*Message, error) {
+	data := url.Values{}
+	data.Set("token", s.token)
+	data.Set("channel", chat.ID)
+	data.Set("ts", threadID)
+	data.Set("limit", "50")
+
+	resp, err := s.doPost(ctx, slackURL+"/conversations.replies", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("chat.PostMessage request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var sResp struct {
+		slackResponse
+		HasMore          bool              `json:"has_more"`
+		Messages         []json.RawMessage `json:"messages"`
+		ResponseMetadata struct {
+			NextCursor string `json:"next_cursor"`
+		} `json:"response_metadata"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %s", err)
+	}
+	if !sResp.Ok {
+		return nil, fmt.Errorf("conversations.replies failed error:%s warning:%s", sResp.Error, sResp.Warning)
+	}
+
+	messages := make([]*Message, 0, len(sResp.Messages))
+	for _, msg := range sResp.Messages {
+		parsedMsg, err := s.ParseRawMessage(msg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse message: %w", err)
+		}
+		messages = append(messages, parsedMsg)
+	}
+
+	return messages, nil
+}
+
 func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 	log(Debug, fmt.Sprintf("incoming rawMsg:%s", rawMsg))
 
@@ -603,6 +643,7 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 		BotID       string
 		Text        string
 		Ts          string
+		ThreadTs    string `json:"thread_ts"`
 		Attachments []Attachment
 		Files       []File
 		SubType     string
@@ -631,14 +672,21 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 	}
 
 	msg := Message{}
-	chatType := Group
-	if strings.HasPrefix(raw.Channel, "D") {
+	var chatType ChatType
+	switch {
+	case strings.HasPrefix(raw.Channel, "D"):
 		chatType = Private
+	case raw.ThreadTs != "":
+		chatType = Thread
+	default:
+		chatType = Group
 	}
+
 	switch raw.Type {
 	case "message":
 		msg = Message{
-			ID: raw.Ts,
+			ID:        raw.Ts,
+			ReplyToID: raw.ThreadTs,
 			Chat: Chat{
 				ID:   raw.Channel,
 				Type: chatType,

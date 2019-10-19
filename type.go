@@ -27,8 +27,10 @@ type Client interface {
 	ChatInfo(ctx context.Context, chatID string) (ChatInfo, error)
 	// SetTopic for a channel
 	SetTopic(ctx context.Context, chatID, topic string) error
-	//UploadFile to a channel
+	// UploadFile to a channel
 	UploadFile(ctx context.Context, chatID string, filename string, r io.Reader) error
+	// Get all replies to a threaded message
+	ThreadReplies(ctx context.Context, chat Chat, threadID string) ([]*Message, error)
 }
 
 type Attachment struct {
