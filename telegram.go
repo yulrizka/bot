@@ -619,6 +619,18 @@ func (t *Telegram) UploadFile(ctx context.Context, chatID string, filename strin
 	panic("TODO not implemented")
 }
 
+func (t *Telegram) ThreadReplies(ctx context.Context, chat Chat, threadID string) ([]*Message, error) {
+	panic("TODO not implemented")
+}
+
+func (t *Telegram) MessagePermalink(ctx context.Context, msg *Message) (string, error) {
+	panic("TODO not implemented")
+}
+
+func (t *Telegram) FetchImage(ctx context.Context, fileURL string) (io.ReadCloser, error) {
+	panic("TODO not implemented")
+}
+
 //TelegramEscape escapes html that is acceptable by telegram
 //noinspection GoUnusedExportedFunction
 func TelegramEscape(s string) string {

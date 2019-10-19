@@ -27,8 +27,14 @@ type Client interface {
 	ChatInfo(ctx context.Context, chatID string) (ChatInfo, error)
 	// SetTopic for a channel
 	SetTopic(ctx context.Context, chatID, topic string) error
-	//UploadFile to a channel
+	// UploadFile to a channel
 	UploadFile(ctx context.Context, chatID string, filename string, r io.Reader) error
+	// Get all replies to a threaded message
+	ThreadReplies(ctx context.Context, chat Chat, threadID string) ([]*Message, error)
+	// Get Permanent link of a message
+	MessagePermalink(ctx context.Context, msg *Message) (string, error)
+	// Fetch Private Image that needs authentication
+	FetchImage(ctx context.Context, fileURL string) (io.ReadCloser, error)
 }
 
 type Attachment struct {

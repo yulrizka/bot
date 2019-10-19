@@ -285,7 +285,7 @@ func (s *Slack) Start(ctx context.Context) error {
 					msg.Chat.ID = channel
 					outMsg.Channel = channel
 				case Thread:
-					outMsg.ThreadTs = msg.ReplyTo.ID
+					outMsg.ThreadTs = msg.ReplyToID
 				}
 
 				// if message has attachment, we must use the web API
@@ -580,6 +580,48 @@ func (s *Slack) chatPostMessage(ctx context.Context, msg Message) error {
 	return nil
 }
 
+func (s *Slack) ThreadReplies(ctx context.Context, chat Chat, threadID string) ([]*Message, error) {
+	data := url.Values{}
+	data.Set("token", s.token)
+	data.Set("channel", chat.ID)
+	data.Set("ts", threadID)
+	data.Set("limit", "50")
+
+	resp, err := s.doPost(ctx, slackURL+"/conversations.replies", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("chat.PostMessage request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var sResp struct {
+		slackResponse
+		HasMore          bool              `json:"has_more"`
+		Messages         []json.RawMessage `json:"messages"`
+		ResponseMetadata struct {
+			NextCursor string `json:"next_cursor"`
+		} `json:"response_metadata"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %s", err)
+	}
+	if !sResp.Ok {
+		return nil, fmt.Errorf("conversations.replies failed error:%s warning:%s", sResp.Error, sResp.Warning)
+	}
+
+	chat.Type = Thread
+	messages := make([]*Message, 0, len(sResp.Messages))
+	for _, msg := range sResp.Messages {
+		parsedMsg, err := s.ParseRawMessage(msg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse message: %w", err)
+		}
+		parsedMsg.Chat = chat
+		messages = append(messages, parsedMsg)
+	}
+
+	return messages, nil
+}
+
 func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 	log(Debug, fmt.Sprintf("incoming rawMsg:%s", rawMsg))
 
@@ -595,6 +637,18 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 		return nil, nil
 	}
 
+	type slackFile struct {
+		Id        string
+		Name      string
+		Mimetype  string
+		Filetype  string
+		Url       string `json:"url_private"`
+		UrlPublic string `json:"permalink_public"`
+		To        []FileAddress
+		From      []FileAddress
+		PlainText string `json:"plain_text"`
+	}
+
 	var raw struct {
 		Type        string
 		Channel     string
@@ -603,8 +657,9 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 		BotID       string
 		Text        string
 		Ts          string
+		ThreadTs    string `json:"thread_ts"`
 		Attachments []Attachment
-		Files       []File
+		Files       []slackFile
 		SubType     string
 		//SourceTeam string
 		//Team string
@@ -631,14 +686,21 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 	}
 
 	msg := Message{}
-	chatType := Group
-	if strings.HasPrefix(raw.Channel, "D") {
+	var chatType ChatType
+	switch {
+	case strings.HasPrefix(raw.Channel, "D"):
 		chatType = Private
+	case raw.ThreadTs != "":
+		chatType = Thread
+	default:
+		chatType = Group
 	}
+
 	switch raw.Type {
 	case "message":
 		msg = Message{
-			ID: raw.Ts,
+			ID:        raw.Ts,
+			ReplyToID: raw.ThreadTs,
 			Chat: Chat{
 				ID:   raw.Channel,
 				Type: chatType,
@@ -648,7 +710,20 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 			Text:        raw.Text,
 			Format:      Text,
 			Attachments: raw.Attachments,
-			Files:       raw.Files,
+		}
+		for _, sf := range raw.Files {
+			f := File{
+				Id:        sf.Id,
+				Name:      sf.Name,
+				Mimetype:  sf.Mimetype,
+				Filetype:  sf.Filetype,
+				Url:       sf.Url,
+				UrlPublic: sf.UrlPublic,
+				To:        sf.To,
+				From:      sf.From,
+				PlainText: sf.PlainText,
+			}
+			msg.Files = append(msg.Files, f)
 		}
 		if raw.SubType == "bot_message" {
 			msg.From.Username = raw.Username
@@ -970,6 +1045,62 @@ func (s *Slack) UploadFile(ctx context.Context, chatID string, filename string, 
 	}
 
 	return nil
+}
+
+func (s *Slack) MessagePermalink(ctx context.Context, msg *Message) (string, error) {
+	data := url.Values{}
+	data.Set("token", s.token)
+	data.Set("channel", msg.Chat.ID)
+	data.Set("message_ts", msg.ID)
+
+	resp, err := s.doPost(ctx, slackURL+"/chat.getPermalink", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("channel.info request failed: %s", err)
+	}
+	defer func() {
+		//noinspection ALL
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}()
+
+	var sResp struct {
+		slackResponse
+		Permalink string `json:"permalink"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
+		return "", fmt.Errorf("failed to parse response: %s", err)
+	}
+	if !sResp.Ok {
+		return "", slackError{
+			Message:    "chat.getPermalink failed",
+			ErrorMsg:   sResp.Error,
+			WarningMsg: sResp.Warning,
+		}
+	}
+
+	return sResp.Permalink, nil
+
+}
+
+func (s *Slack) FetchImage(ctx context.Context, fileURL string) (io.ReadCloser, error) {
+	req, err := http.NewRequest("GET", fileURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed creating request: %v", err)
+	}
+
+	httpClient := http.DefaultClient
+	httpClient.Timeout = 15 * time.Second
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.token))
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("got response %d", resp.StatusCode)
+	}
+
+	return resp.Body, nil
 }
 
 func (s *Slack) doPost(ctx context.Context, url string, contentType string, body io.Reader) (*http.Response, error) {
