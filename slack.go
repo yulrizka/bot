@@ -677,14 +677,6 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 		ts = time.Unix(int64(timestamp), 0)
 	}
 
-	slackUser := s.idToMember[raw.User]
-	user := User{
-		ID:        raw.User,
-		FirstName: slackUser.Profile.FirstName,
-		LastName:  slackUser.Profile.LastName,
-		Username:  slackUser.Name,
-	}
-
 	msg := Message{}
 	var chatType ChatType
 	switch {
@@ -698,6 +690,13 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 
 	switch raw.Type {
 	case "message":
+		slackUser := s.idToMember[raw.User]
+		user := User{
+			ID:        raw.User,
+			FirstName: slackUser.Profile.FirstName,
+			LastName:  slackUser.Profile.LastName,
+			Username:  slackUser.Name,
+		}
 		msg = Message{
 			ID:        raw.Ts,
 			ReplyToID: raw.ThreadTs,
@@ -725,9 +724,80 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 			}
 			msg.Files = append(msg.Files, f)
 		}
-		if raw.SubType == "bot_message" {
+		switch raw.SubType {
+		case "bot_message":
 			msg.From.Username = raw.Username
 			msg.From.ID = raw.BotID
+		case "message_changed":
+			fmt.Println("changed") // for debugging
+			var msgChanged struct {
+				Message struct {
+					Type   string `json:"type"`
+					Text   string `json:"text"`
+					User   string `json:"user"`
+					Edited struct {
+						User string `json:"user"`
+						Ts   string `json:"ts"`
+					} `json:"edited"`
+					Ts string `json:"ts"`
+				} `json:"message"`
+				Channel         string `json:"channel"`
+				PreviousMessage struct {
+					Text string `json:"text"`
+					User string `json:"user"`
+					Ts   string `json:"ts"`
+				} `json:"previous_message"`
+				Ts string `json:"ts"`
+			}
+			if err := json.Unmarshal(rawMsg, &msgChanged); err != nil {
+				return nil, fmt.Errorf("failed parsing message type: %s", err)
+			}
+			fmt.Printf("msgChanged = %+v\n", msgChanged) // TODO: for debugging
+			slackUser := s.idToMember[msgChanged.Message.User]
+			user := User{
+				ID:        msgChanged.Message.User,
+				FirstName: slackUser.Profile.FirstName,
+				LastName:  slackUser.Profile.LastName,
+				Username:  slackUser.Name,
+			}
+			prevSlackUser := s.idToMember[msgChanged.PreviousMessage.User]
+			prevUser := User{
+				ID:        msgChanged.PreviousMessage.User,
+				FirstName: prevSlackUser.Profile.FirstName,
+				LastName:  prevSlackUser.Profile.LastName,
+				Username:  prevSlackUser.Name,
+			}
+			var prevTs time.Time
+			if msgChanged.PreviousMessage.Ts != "" {
+				timestamp, err := strconv.ParseFloat(raw.Ts, 64)
+				if err != nil {
+					return nil, fmt.Errorf("failed to parse timestamp: %s", err)
+				}
+				prevTs = time.Unix(int64(timestamp), 0)
+			}
+			msg = Message{
+				ID: msgChanged.Ts,
+				Chat: Chat{
+					ID:   msgChanged.Channel,
+					Type: chatType,
+				},
+				From:   user,
+				Date:   ts,
+				Text:   msgChanged.Message.Text,
+				Format: Text,
+				PreviousMessage: &Message{
+					ID:   msgChanged.PreviousMessage.Ts,
+					Text: msgChanged.PreviousMessage.Text,
+					Chat: Chat{
+						ID:   msgChanged.Channel,
+						Type: chatType,
+					},
+					From:   prevUser,
+					Date:   prevTs,
+					Format: Text,
+				},
+			}
+			return &msg, nil
 		}
 	}
 

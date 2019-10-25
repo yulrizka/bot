@@ -47,21 +47,22 @@ type Attachment struct {
 
 // Message represents chat message
 type Message struct {
-	ctx          context.Context
-	ID           string
-	From         User
-	Date         time.Time
-	Chat         Chat
-	Text         string
-	Format       MessageFormat
-	ReplyTo      *Message
-	ReplyToID    string
-	ReceivedAt   time.Time
-	Attachments  []Attachment
-	Files        []File
-	Raw          json.RawMessage `json:"-"`
-	Retry        int             `json:"-"`
-	DiscardAfter time.Time       `json:"-"`
+	ctx             context.Context
+	ID              string
+	From            User
+	Date            time.Time
+	Chat            Chat
+	Text            string
+	Format          MessageFormat
+	ReplyTo         *Message
+	ReplyToID       string
+	ReceivedAt      time.Time
+	Attachments     []Attachment
+	Files           []File
+	PreviousMessage *Message        // if message was edited, this is original message
+	Raw             json.RawMessage `json:"-"`
+	Retry           int             `json:"-"`
+	DiscardAfter    time.Time       `json:"-"`
 }
 
 type File struct {
