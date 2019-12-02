@@ -729,7 +729,6 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 			msg.From.Username = raw.Username
 			msg.From.ID = raw.BotID
 		case "message_changed":
-			fmt.Println("changed") // for debugging
 			var msgChanged struct {
 				Message struct {
 					Type   string `json:"type"`
@@ -752,7 +751,6 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 			if err := json.Unmarshal(rawMsg, &msgChanged); err != nil {
 				return nil, fmt.Errorf("failed parsing message type: %s", err)
 			}
-			fmt.Printf("msgChanged = %+v\n", msgChanged) // TODO: for debugging
 			slackUser := s.idToMember[msgChanged.Message.User]
 			user := User{
 				ID:        msgChanged.Message.User,
