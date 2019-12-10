@@ -48,11 +48,13 @@ type Slack struct {
 	id             string
 	name           string
 
-	idToMember       map[string]slackUser
-	userNameToMember map[string]slackUser
-	ims              map[string]slackIm
-	channels         map[string]slackChannel
-	nameToChannels   map[string]slackChannel
+	idToMember           map[string]slackUser
+	enterpriseIdToMember map[string]slackUser
+	userNameToMember     map[string]slackUser
+	user                 map[string]slackUser
+	ims                  map[string]slackIm
+	channels             map[string]slackChannel
+	nameToChannels       map[string]slackChannel
 }
 
 type slackUser struct {
@@ -396,10 +398,13 @@ func (s *Slack) init(ctx context.Context) error {
 		}
 		s.idToMember = members
 
+		enterpriseIdToMember := map[string]slackUser{}
 		s.userNameToMember = make(map[string]slackUser)
 		for _, user := range members {
 			s.userNameToMember[user.Name] = user
+			enterpriseIdToMember[user.EnterpriseUser.ID] = user
 		}
+		s.enterpriseIdToMember = enterpriseIdToMember
 	}()
 
 	go func() {
@@ -455,33 +460,63 @@ func (s *Slack) init(ctx context.Context) error {
 }
 
 func (s *Slack) userList(ctx context.Context) (map[string]slackUser, error) {
+	users := map[string]slackUser{}
+
+	var (
+		nextCursor  string
+		err         error
+		currentUser map[string]slackUser
+	)
+
+	for {
+		currentUser, nextCursor, err = s.userListWithCursor(ctx, "")
+		if err != nil {
+			return users, err
+		}
+		for k, v := range currentUser {
+			users[k] = v
+		}
+		if nextCursor == "" {
+			break
+		}
+	}
+
+	return users, nil
+}
+
+func (s *Slack) userListWithCursor(ctx context.Context, cursor string) (users map[string]slackUser, nextCursor string, err error) {
 	data := url.Values{}
 	data.Set("token", s.token)
 	data.Set("presence", "true")
+	if cursor != "" {
+		data.Set("cursor", cursor)
+	}
 
 	resp, err := s.doPost(ctx, slackURL+"/users.list", "application/x-www-form-urlencoded", strings.NewReader(data.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("faile to create connect request: %s", err)
+		return nil, "", fmt.Errorf("faile to create connect request: %s", err)
 	}
 	defer resp.Body.Close()
 
 	var sResp struct {
 		slackResponse
-		Members []slackUser
+		Members          []slackUser
+		ResponseMetadata struct {
+			NextCursor string `json:"next_cursor"`
+		} `json:"response_metadata"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&sResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %s", err)
-
+		return nil, "", fmt.Errorf("failed to parse response: %s", err)
 	}
 	if !sResp.Ok {
-		return nil, fmt.Errorf("userList failed error:%s warning:%s", sResp.Error, sResp.Warning)
+		return nil, "", fmt.Errorf("userList failed error:%s warning:%s", sResp.Error, sResp.Warning)
 	}
 
 	members := make(map[string]slackUser)
 	for _, member := range sResp.Members {
 		members[member.ID] = member
 	}
-	return members, nil
+	return members, sResp.ResponseMetadata.NextCursor, nil
 }
 
 func (s *Slack) imList(ctx context.Context) (map[string]slackIm, error) {
@@ -622,6 +657,16 @@ func (s *Slack) ThreadReplies(ctx context.Context, chat Chat, threadID string) (
 	return messages, nil
 }
 
+func (s *Slack) idToSlackUser(userId string) slackUser {
+	slackUser, ok := s.idToMember[userId]
+	if ok {
+		return slackUser
+	}
+
+	// sometime slack return the enterprise id instead of normal id check it as well or return empty
+	return s.enterpriseIdToMember[userId]
+}
+
 func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 	log(Debug, fmt.Sprintf("incoming rawMsg:%s", rawMsg))
 
@@ -690,7 +735,7 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 
 	switch raw.Type {
 	case "message":
-		slackUser := s.idToMember[raw.User]
+		slackUser := s.idToSlackUser(raw.User)
 		user := User{
 			ID:        raw.User,
 			FirstName: slackUser.Profile.FirstName,
@@ -751,14 +796,14 @@ func (s *Slack) ParseRawMessage(rawMsg []byte) (*Message, error) {
 			if err := json.Unmarshal(rawMsg, &msgChanged); err != nil {
 				return nil, fmt.Errorf("failed parsing message type: %s", err)
 			}
-			slackUser := s.idToMember[msgChanged.Message.User]
+			slackUser := s.idToSlackUser(msgChanged.Message.User)
 			user := User{
 				ID:        msgChanged.Message.User,
 				FirstName: slackUser.Profile.FirstName,
 				LastName:  slackUser.Profile.LastName,
 				Username:  slackUser.Name,
 			}
-			prevSlackUser := s.idToMember[msgChanged.PreviousMessage.User]
+			prevSlackUser := s.idToSlackUser(msgChanged.PreviousMessage.User)
 			prevUser := User{
 				ID:        msgChanged.PreviousMessage.User,
 				FirstName: prevSlackUser.Profile.FirstName,
@@ -1150,7 +1195,7 @@ func (s *Slack) MessagePermalink(ctx context.Context, msg *Message) (string, err
 
 }
 
-func (s *Slack) FetchImage(ctx context.Context, fileURL string) (io.ReadCloser, error) {
+func (s *Slack) FetchImage(_ context.Context, fileURL string) (io.ReadCloser, error) {
 	req, err := http.NewRequest("GET", fileURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed creating request: %v", err)
