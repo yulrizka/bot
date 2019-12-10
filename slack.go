@@ -58,89 +58,89 @@ type Slack struct {
 }
 
 type slackUser struct {
-	ID                 string
-	TeamID             string
-	Name               string
-	Deleted            bool
-	Color              string
-	RealName           string
-	RealNameNormalized string
-	TZ                 string
-	TZLabel            string
-	TZOffset           int64
+	ID                 string `json:"id"`
+	TeamID             string `json:"team_id"`
+	Name               string `json:"name"`
+	Deleted            bool   `json:"deleted"`
+	Color              string `json:"color"`
+	RealName           string `json:"real_name"`
+	RealNameNormalized string `json:"real_name_normalized"`
+	TZ                 string `json:"tz"`
+	TZLabel            string `json:"tz_label"`
+	TZOffset           int64  `json:"tz_offset"`
 	Profile            struct {
-		FirstName      string
-		LastName       string
-		AvatarHash     string
-		Image24        string
-		Image32        string
-		Image48        string
-		Image72        string
-		Image192       string
-		Image512       string
-		Image1024      string
-		ImageOriginal  string
-		Title          string
-		Phone          string
-		GuestChannels  string
-		GuestInvitedBy string
-		Email          string
-	}
-	IsAdmin           bool
-	IsOwner           bool
-	IsPrimaryOwner    bool
-	IsRestricted      bool
-	IsUltraRestricted bool
-	IsBot             bool
-	Updated           int64
+		FirstName      string `json:"first_name"`
+		LastName       string `json:"last_name"`
+		AvatarHash     string `json:"avatar_hash"`
+		Image24        string `json:"image_24"`
+		Image32        string `json:"image_32"`
+		Image48        string `json:"image_48"`
+		Image72        string `json:"image_72"`
+		Image192       string `json:"image_192"`
+		Image512       string `json:"image_512"`
+		Image1024      string `json:"image_1024"`
+		ImageOriginal  string `json:"image_original"`
+		Title          string `json:"title"`
+		Phone          string `json:"phone"`
+		GuestChannels  string `json:"guest_channels"`
+		GuestInvitedBy string `json:"guest_invited_by"`
+		Email          string `json:"email"`
+	} `json:"profile"`
+	IsAdmin           bool  `json:"is_admin"`
+	IsOwner           bool  `json:"is_owner"`
+	IsPrimaryOwner    bool  `json:"is_primary_owner"`
+	IsRestricted      bool  `json:"is_restricted"`
+	IsUltraRestricted bool  `json:"is_ultra_restricted"`
+	IsBot             bool  `json:"is_bot"`
+	Updated           int64 `json:"updated"`
 	EnterpriseUser    struct {
-		ID             string
-		EnterpriseID   string
-		EnterpriseName string
-		IsAdmin        bool
-		IsOwner        bool
-		Teams          []string
-	}
+		ID             string   `json:"id"`
+		EnterpriseID   string   `json:"enterprise_id"`
+		EnterpriseName string   `json:"enterprise_name"`
+		IsAdmin        bool     `json:"is_admin"`
+		IsOwner        bool     `json:"is_owner"`
+		Teams          []string `json:"teams"`
+	} `json:"enterprise_user"`
 }
 
 type slackIm struct {
-	ID            string
-	IsIM          bool
-	User          string
-	Created       int64
-	IsUserDeleted bool
+	ID            string `json:"id"`
+	IsIM          bool   `json:"is_im"`
+	User          string `json:"user"`
+	Created       int64  `json:"created"`
+	IsUserDeleted bool   `json:"is_user_deleted"`
 }
 
 type slackChannel struct {
-	Id         string
-	Name       string
-	Created    int64
-	Creator    string
-	IsArchived bool
-	IsMember   bool
-	NumMembers int64
+	Id         string `json:"id"`
+	Name       string `json:"name"`
+	Created    int64  `json:"created"`
+	Creator    string `json:"creator"`
+	IsArchived bool   `json:"is_archived"`
+	IsMember   bool   `json:"is_member"`
+	NumMembers int64  `json:"num_members"`
 	Topic      struct {
-		Value   string
-		Creator string
-		LastSet int64
+		Value   string `json:"value"`
+		Creator string `json:"creator"`
+		LastSet int64  `json:"last_set"`
 	}
 	Purpose struct {
-		Value   string
-		Creator string
-		LastSet int64
-	}
+		Value   string `json:"value"`
+		Creator string `json:"creator"`
+		LastSet int64  `json:"last_set"`
+	} `json:"purpose"`
 }
 
 type slackResponse struct {
-	Ok      bool
-	Error   string
-	Warning string
+	Ok      bool   `json:"ok"`
+	Error   string `json:"error"`
+	Warning string `json:"warning"`
 }
 
 type slackError struct {
-	Message    string
-	ErrorMsg   string
-	WarningMsg string
+	Message    string `json:"message"`
+	ErrorMsg   string `json:"error_msg"`
+	WarningMsg string `json:"warning_msg"`
 }
 
 type slackConversation struct {
@@ -402,7 +402,9 @@ func (s *Slack) init(ctx context.Context) error {
 		s.userNameToMember = make(map[string]slackUser)
 		for _, user := range members {
 			s.userNameToMember[user.Name] = user
-			enterpriseIdToMember[user.EnterpriseUser.ID] = user
+			if user.EnterpriseUser.ID != "" {
+				enterpriseIdToMember[user.EnterpriseUser.ID] = user
+			}
 		}
 		s.enterpriseIdToMember = enterpriseIdToMember
 	}()
