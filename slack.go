@@ -1228,3 +1228,12 @@ func (s *Slack) doPost(ctx context.Context, url string, contentType string, body
 
 	return http.DefaultClient.Do(req)
 }
+
+func (s *Slack) SendMessage(ctx context.Context, msg Message) {
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+	s.output <- msg
+}

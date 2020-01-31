@@ -35,6 +35,8 @@ type Client interface {
 	MessagePermalink(ctx context.Context, msg *Message) (string, error)
 	// Fetch Private Image that needs authentication
 	FetchImage(ctx context.Context, fileURL string) (io.ReadCloser, error)
+	// SendMessage
+	SendMessage(ctx context.Context, msg Message)
 }
 
 type Attachment struct {

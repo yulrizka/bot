@@ -631,6 +631,10 @@ func (t *Telegram) FetchImage(ctx context.Context, fileURL string) (io.ReadClose
 	panic("TODO not implemented")
 }
 
+func (t *Telegram) SendMessage(ctx context.Context, msg Message) {
+	panic("implement me")
+}
+
 //TelegramEscape escapes html that is acceptable by telegram
 //noinspection GoUnusedExportedFunction
 func TelegramEscape(s string) string {
